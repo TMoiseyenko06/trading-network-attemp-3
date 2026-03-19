@@ -98,21 +98,106 @@ def triple_barrier_labels(
     return result
 
 
+def dynamic_barrier_labels(
+    close: pd.Series,
+    high: pd.Series,
+    low: pd.Series,
+    max_bars: int = 20,
+) -> pd.DataFrame:
+    """Compute labels with optimal TP/SL targets derived from forward price action.
+
+    Instead of fixed TP/SL percentages, this measures the actual max favorable
+    excursion (MFE) and max adverse excursion (MAE) over the forward window,
+    then labels based on the realized outcome.
+
+    Returns:
+        DataFrame with columns:
+            label: 0=winner (MFE > MAE), 1=loser (MAE > MFE), 2=flat (tiny move)
+            magnitude: absolute return at end of window
+            target_tp: MFE as pct of entry — what TP should have been
+            target_sl: MAE as pct of entry — what SL should have been
+    """
+    closes = close.values
+    highs = high.values
+    lows = low.values
+    n = len(closes)
+
+    labels = np.full(n, 2, dtype=np.int64)
+    magnitudes = np.zeros(n, dtype=np.float64)
+    target_tp = np.zeros(n, dtype=np.float64)
+    target_sl = np.zeros(n, dtype=np.float64)
+
+    flat_threshold = 0.0005  # below this, label as flat/timeout
+
+    for i in range(n):
+        entry = closes[i]
+        if entry == 0:
+            continue
+
+        end = min(i + max_bars + 1, n)
+        if end <= i + 1:
+            continue
+
+        # Max favorable excursion (best high above entry)
+        mfe = (highs[i + 1:end].max() - entry) / entry
+        # Max adverse excursion (worst low below entry)
+        mae = (entry - lows[i + 1:end].min()) / entry
+
+        # Clamp to non-negative
+        mfe = max(mfe, 0.0)
+        mae = max(mae, 0.0)
+
+        target_tp[i] = mfe
+        target_sl[i] = mae
+
+        # Realized return at end of window
+        final_ret = (closes[min(i + max_bars, n - 1)] - entry) / entry
+        magnitudes[i] = abs(final_ret)
+
+        # Label: if the move is too small, it's flat
+        if mfe < flat_threshold and mae < flat_threshold:
+            labels[i] = 2  # flat
+        elif mfe > mae:
+            labels[i] = 0  # winner — favorable move dominated
+        else:
+            labels[i] = 1  # loser — adverse move dominated
+
+    return pd.DataFrame(
+        {
+            "label": labels,
+            "magnitude": magnitudes,
+            "target_tp": target_tp,
+            "target_sl": target_sl,
+        },
+        index=close.index,
+    )
+
+
 def build_sequences(
     features: pd.DataFrame,
     labels: pd.DataFrame,
     lookback: int = 90,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Build sliding-window sequences for training.
 
     Returns:
         X: (N, lookback, num_features)
         y_class: (N,) int labels
         y_magnitude: (N,) float magnitudes
+        y_tp: (N,) float target take-profit pct
+        y_sl: (N,) float target stop-loss pct
     """
     feat = features.values.astype(np.float32)
     lab = labels["label"].values
     mag = labels["magnitude"].values.astype(np.float32)
+
+    has_tp_sl = "target_tp" in labels.columns and "target_sl" in labels.columns
+    if has_tp_sl:
+        tp = labels["target_tp"].values.astype(np.float32)
+        sl = labels["target_sl"].values.astype(np.float32)
+    else:
+        tp = np.zeros(len(lab), dtype=np.float32)
+        sl = np.zeros(len(lab), dtype=np.float32)
 
     n = len(feat) - lookback
     if n <= 0:
@@ -124,7 +209,9 @@ def build_sequences(
 
     y_class = lab[lookback:].copy()
     y_mag = mag[lookback:].copy()
+    y_tp = tp[lookback:].copy()
+    y_sl = sl[lookback:].copy()
 
     # Drop any rows with NaN in features
     valid = ~np.isnan(X.reshape(X.shape[0], -1)).any(axis=1)
-    return X[valid], y_class[valid], y_mag[valid]
+    return X[valid], y_class[valid], y_mag[valid], y_tp[valid], y_sl[valid]

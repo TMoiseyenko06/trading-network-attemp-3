@@ -115,7 +115,7 @@ class ContextMemory(nn.Module):
 
 
 class DecisionHead(nn.Module):
-    """Stage 3 — three simultaneous outputs from the final hidden state."""
+    """Stage 3 — five simultaneous outputs from the final hidden state."""
 
     def __init__(self, hidden_dim: int, num_classes: int = 3):
         super().__init__()
@@ -127,14 +127,19 @@ class DecisionHead(nn.Module):
         self.direction = nn.Linear(hidden_dim, num_classes)   # softmax over long/short/flat
         self.confidence = nn.Linear(hidden_dim, 1)            # sigmoid -> [0, 1]
         self.magnitude = nn.Linear(hidden_dim, 1)             # expected move size
+        self.tp_head = nn.Linear(hidden_dim, 1)               # take-profit pct (softplus)
+        self.sl_head = nn.Linear(hidden_dim, 1)               # stop-loss pct (softplus)
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         # x: (batch, seq_len, hidden_dim) — take last timestep
         h = self.shared(x[:, -1, :])
         direction = self.direction(h)              # raw logits
         confidence = torch.sigmoid(self.confidence(h)).squeeze(-1)
         magnitude = torch.relu(self.magnitude(h)).squeeze(-1)
-        return direction, confidence, magnitude
+        # TP/SL as positive percentages via softplus (always > 0)
+        pred_tp = nn.functional.softplus(self.tp_head(h)).squeeze(-1)
+        pred_sl = nn.functional.softplus(self.sl_head(h)).squeeze(-1)
+        return direction, confidence, magnitude, pred_tp, pred_sl
 
 
 class NeuralOHLCVNet(nn.Module):
@@ -156,7 +161,7 @@ class NeuralOHLCVNet(nn.Module):
 
     def forward(
         self, x: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
             x: (batch, lookback, input_dim)
@@ -164,6 +169,8 @@ class NeuralOHLCVNet(nn.Module):
             direction_logits: (batch, num_classes)
             confidence: (batch,)
             magnitude: (batch,)
+            pred_tp: (batch,) predicted take-profit pct
+            pred_sl: (batch,) predicted stop-loss pct
         """
         features = self.feature_learner(x)
         context = self.context_memory(features)

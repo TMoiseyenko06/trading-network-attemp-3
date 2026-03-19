@@ -12,7 +12,7 @@ import sys
 from .model import NeuralOHLCVNet
 from .loss import TradingLoss
 from .gpu import GPUProfile, detect_gpu, scale_dim
-from .preprocessing import compute_features, add_time_features, triple_barrier_labels, build_sequences
+from .preprocessing import compute_features, add_time_features, dynamic_barrier_labels, build_sequences
 
 
 class WalkForwardTrainer:
@@ -22,8 +22,6 @@ class WalkForwardTrainer:
         self,
         gpu_profile: Optional[GPUProfile] = None,
         lookback: int = 90,
-        tp_pct: float = 0.0035,
-        sl_pct: float = 0.002,
         max_bars: int = 20,
         lr: float = 1e-3,
         epochs_per_fold: int = 30,
@@ -31,8 +29,6 @@ class WalkForwardTrainer:
     ):
         self.gpu = gpu_profile or detect_gpu()
         self.lookback = lookback
-        self.tp_pct = tp_pct
-        self.sl_pct = sl_pct
         self.max_bars = max_bars
         self.lr = lr
         self.epochs_per_fold = epochs_per_fold
@@ -48,11 +44,11 @@ class WalkForwardTrainer:
         print(f"  Batch size: {self.gpu.batch_size} | Hidden dim: {self.hidden_dim} | "
               f"Workers: {self.gpu.num_workers}")
 
-    def _prepare_data(self, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _prepare_data(self, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Preprocess raw OHLCV dataframe into sequences."""
         features = compute_features(df)
         features = add_time_features(features)
-        labels = triple_barrier_labels(df["close"], self.tp_pct, self.sl_pct, self.max_bars)
+        labels = dynamic_barrier_labels(df["close"], df["high"], df["low"], self.max_bars)
 
         # Drop initial NaN rows
         valid_start = features.first_valid_index()
@@ -63,12 +59,15 @@ class WalkForwardTrainer:
         return build_sequences(features, labels, self.lookback)
 
     def _make_loader(
-        self, X: np.ndarray, y_cls: np.ndarray, y_mag: np.ndarray, shuffle: bool = True,
+        self, X: np.ndarray, y_cls: np.ndarray, y_mag: np.ndarray,
+        y_tp: np.ndarray, y_sl: np.ndarray, shuffle: bool = True,
     ) -> DataLoader:
         dataset = TensorDataset(
             torch.from_numpy(X),
             torch.from_numpy(y_cls.astype(np.int64)),
             torch.from_numpy(y_mag),
+            torch.from_numpy(y_tp),
+            torch.from_numpy(y_sl),
         )
         return DataLoader(
             dataset,
@@ -106,14 +105,16 @@ class WalkForwardTrainer:
         total_metrics: dict[str, float] = {}
         n_batches = 0
 
-        for step, (X, y_cls, y_mag) in enumerate(loader):
+        for step, (X, y_cls, y_mag, y_tp, y_sl) in enumerate(loader):
             X = X.to(self.device, non_blocking=True)
             y_cls = y_cls.to(self.device, non_blocking=True)
             y_mag = y_mag.to(self.device, non_blocking=True)
+            y_tp = y_tp.to(self.device, non_blocking=True)
+            y_sl = y_sl.to(self.device, non_blocking=True)
 
             with torch.amp.autocast("cuda", enabled=self.gpu.use_amp):
-                dir_logits, conf, pred_mag = model(X)
-                loss, metrics = criterion(dir_logits, conf, pred_mag, y_cls, y_mag)
+                dir_logits, conf, pred_mag, pred_tp, pred_sl = model(X)
+                loss, metrics = criterion(dir_logits, conf, pred_mag, pred_tp, pred_sl, y_cls, y_mag, y_tp, y_sl)
                 loss = loss / self.gpu.gradient_accumulation_steps
 
             if scaler is not None:
@@ -148,14 +149,16 @@ class WalkForwardTrainer:
         total_metrics: dict[str, float] = {}
         n_batches = 0
 
-        for X, y_cls, y_mag in loader:
+        for X, y_cls, y_mag, y_tp, y_sl in loader:
             X = X.to(self.device, non_blocking=True)
             y_cls = y_cls.to(self.device, non_blocking=True)
             y_mag = y_mag.to(self.device, non_blocking=True)
+            y_tp = y_tp.to(self.device, non_blocking=True)
+            y_sl = y_sl.to(self.device, non_blocking=True)
 
             with torch.amp.autocast("cuda", enabled=self.gpu.use_amp):
-                dir_logits, conf, pred_mag = model(X)
-                _, metrics = criterion(dir_logits, conf, pred_mag, y_cls, y_mag)
+                dir_logits, conf, pred_mag, pred_tp, pred_sl = model(X)
+                _, metrics = criterion(dir_logits, conf, pred_mag, pred_tp, pred_sl, y_cls, y_mag, y_tp, y_sl)
 
             for k, v in metrics.items():
                 total_metrics[k] = total_metrics.get(k, 0) + v
@@ -181,7 +184,7 @@ class WalkForwardTrainer:
         Returns:
             List of per-fold test results
         """
-        X_all, y_cls_all, y_mag_all = self._prepare_data(df)
+        X_all, y_cls_all, y_mag_all, y_tp_all, y_sl_all = self._prepare_data(df)
         input_dim = X_all.shape[2]
         total_bars = len(X_all)
 
@@ -213,13 +216,16 @@ class WalkForwardTrainer:
 
             train_loader = self._make_loader(
                 X_all[start:t_end], y_cls_all[start:t_end], y_mag_all[start:t_end],
+                y_tp_all[start:t_end], y_sl_all[start:t_end],
             )
             val_loader = self._make_loader(
                 X_all[t_end:v_end], y_cls_all[t_end:v_end], y_mag_all[t_end:v_end],
+                y_tp_all[t_end:v_end], y_sl_all[t_end:v_end],
                 shuffle=False,
             )
             test_loader = self._make_loader(
                 X_all[v_end:te_end], y_cls_all[v_end:te_end], y_mag_all[v_end:te_end],
+                y_tp_all[v_end:te_end], y_sl_all[v_end:te_end],
                 shuffle=False,
             )
 

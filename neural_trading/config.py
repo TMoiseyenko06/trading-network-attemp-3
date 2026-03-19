@@ -9,9 +9,7 @@ class Config:
 
     # Data
     lookback: int = 90                  # bars of history the network sees
-    tp_pct: float = 0.0035              # take-profit as fraction of price
-    sl_pct: float = 0.002               # stop-loss as fraction of price
-    max_bars: int = 20                  # max bars before timeout label
+    max_bars: int = 20                  # forward window for labeling (network predicts its own TP/SL)
     vol_window: int = 20                # rolling window for volume z-score
 
     # Training

@@ -72,8 +72,6 @@ def train(args: argparse.Namespace) -> None:
     trainer = WalkForwardTrainer(
         gpu_profile=gpu,
         lookback=config.lookback,
-        tp_pct=config.tp_pct,
-        sl_pct=config.sl_pct,
         max_bars=config.max_bars,
         lr=config.lr,
         epochs_per_fold=config.epochs_per_fold,
@@ -134,18 +132,23 @@ def infer(args: argparse.Namespace) -> None:
     X = torch.from_numpy(feat_vals).unsqueeze(0).to(gpu.device)
 
     with torch.no_grad(), torch.amp.autocast("cuda", enabled=gpu.use_amp):
-        dir_logits, confidence, magnitude = model(X)
+        dir_logits, confidence, magnitude, pred_tp, pred_sl = model(X)
 
     probs = torch.softmax(dir_logits, dim=1).cpu().numpy()[0]
     conf = confidence.cpu().item()
     mag = magnitude.cpu().item()
+    tp = pred_tp.cpu().item()
+    sl = pred_sl.cpu().item()
     direction = int(dir_logits.argmax(dim=1).cpu().item())
 
+    last_close = df["close"].iloc[-1]
     labels = ["LONG (winner)", "SHORT (loser)", "FLAT (timeout)"]
     print(f"\nSignal: {labels[direction]}")
     print(f"  Probabilities: win={probs[0]:.3f} loss={probs[1]:.3f} flat={probs[2]:.3f}")
     print(f"  Confidence: {conf:.3f}")
     print(f"  Expected magnitude: {mag:.5f}")
+    print(f"  Predicted TP: {tp:.4%} (${last_close * tp:.2f})")
+    print(f"  Predicted SL: {sl:.4%} (${last_close * sl:.2f})")
 
     allowed, size, reason = risk_mgr.check_trade(conf, direction)
     print(f"\nRisk check: {'APPROVED' if allowed else 'BLOCKED'}")
