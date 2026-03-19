@@ -166,127 +166,102 @@ class WalkForwardTrainer:
 
         return {k: v / n_batches for k, v in total_metrics.items()}
 
-    def walk_forward(
+    def train_backtest(
         self,
         df: pd.DataFrame,
-        train_months: int = 3,
-        val_months: int = 1,
-        test_months: int = 1,
-    ) -> list[dict]:
-        """Run walk-forward training across the full dataset.
+        train_pct: float = 0.8,
+        val_pct: float = 0.1,
+    ) -> dict:
+        """Train on first portion of data, backtest on the rest.
 
         Args:
             df: Raw OHLCV dataframe with DatetimeIndex
-            train_months: months of data for training each fold
-            val_months: months for validation
-            test_months: months for test (out-of-sample)
+            train_pct: fraction of data for training (default 80%)
+            val_pct: fraction of training data used for validation / early stopping
 
         Returns:
-            List of per-fold test results
+            Dict with backtest results
         """
         X_all, y_cls_all, y_mag_all, y_tp_all, y_sl_all = self._prepare_data(df)
         input_dim = X_all.shape[2]
-        total_bars = len(X_all)
+        total = len(X_all)
 
-        # Estimate bars per month from the data
-        if isinstance(df.index, pd.DatetimeIndex):
-            total_days = (df.index[-1] - df.index[0]).days
-            bars_per_day = total_bars / max(total_days, 1)
-            bars_per_month = int(bars_per_day * 30)
-        else:
-            bars_per_month = total_bars // 6  # fallback
+        split = int(total * train_pct)
+        val_size = int(split * val_pct)
+        train_end = split - val_size
 
-        train_size = bars_per_month * train_months
-        val_size = bars_per_month * val_months
-        test_size = bars_per_month * test_months
-        fold_step = bars_per_month * (val_months + test_months)
+        print(f"\n{'='*60}")
+        print(f"Train[0:{train_end}] Val[{train_end}:{split}] Backtest[{split}:{total}]")
+        print(f"  {train_end} train / {val_size} val / {total - split} backtest bars")
+        print(f"{'='*60}")
 
-        results = []
-        fold = 0
-        start = 0
+        train_loader = self._make_loader(
+            X_all[:train_end], y_cls_all[:train_end], y_mag_all[:train_end],
+            y_tp_all[:train_end], y_sl_all[:train_end],
+        )
+        val_loader = self._make_loader(
+            X_all[train_end:split], y_cls_all[train_end:split], y_mag_all[train_end:split],
+            y_tp_all[train_end:split], y_sl_all[train_end:split],
+            shuffle=False,
+        )
+        test_loader = self._make_loader(
+            X_all[split:], y_cls_all[split:], y_mag_all[split:],
+            y_tp_all[split:], y_sl_all[split:],
+            shuffle=False,
+        )
 
-        while start + train_size + val_size + test_size <= total_bars:
-            t_end = start + train_size
-            v_end = t_end + val_size
-            te_end = v_end + test_size
+        model = self._build_model(input_dim)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=self.lr, weight_decay=1e-4)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=self.epochs_per_fold,
+        )
+        criterion = TradingLoss()
+        scaler = torch.amp.GradScaler("cuda") if self.gpu.use_amp else None
 
-            print(f"\n{'='*60}")
-            print(f"Fold {fold}: train[{start}:{t_end}] val[{t_end}:{v_end}] test[{v_end}:{te_end}]")
-            print(f"{'='*60}")
+        best_val_loss = float("inf")
+        patience_counter = 0
+        best_state = None
 
-            train_loader = self._make_loader(
-                X_all[start:t_end], y_cls_all[start:t_end], y_mag_all[start:t_end],
-                y_tp_all[start:t_end], y_sl_all[start:t_end],
-            )
-            val_loader = self._make_loader(
-                X_all[t_end:v_end], y_cls_all[t_end:v_end], y_mag_all[t_end:v_end],
-                y_tp_all[t_end:v_end], y_sl_all[t_end:v_end],
-                shuffle=False,
-            )
-            test_loader = self._make_loader(
-                X_all[v_end:te_end], y_cls_all[v_end:te_end], y_mag_all[v_end:te_end],
-                y_tp_all[v_end:te_end], y_sl_all[v_end:te_end],
-                shuffle=False,
-            )
+        for epoch in range(self.epochs_per_fold):
+            t0 = time.time()
+            train_m = self._train_epoch(model, train_loader, optimizer, criterion, scaler)
+            val_m = self._eval_epoch(model, val_loader, criterion)
+            scheduler.step()
+            elapsed = time.time() - t0
 
-            model = self._build_model(input_dim)
-            optimizer = torch.optim.AdamW(model.parameters(), lr=self.lr, weight_decay=1e-4)
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=self.epochs_per_fold,
-            )
-            criterion = TradingLoss()
-            scaler = torch.amp.GradScaler("cuda") if self.gpu.use_amp else None
+            val_loss = val_m["cls_loss"]
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                patience_counter = 0
+                best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            else:
+                patience_counter += 1
 
-            best_val_loss = float("inf")
-            patience_counter = 0
-            best_state = None
-
-            for epoch in range(self.epochs_per_fold):
-                t0 = time.time()
-                train_m = self._train_epoch(model, train_loader, optimizer, criterion, scaler)
-                val_m = self._eval_epoch(model, val_loader, criterion)
-                scheduler.step()
-                elapsed = time.time() - t0
-
-                val_loss = val_m["cls_loss"]
-                if val_loss < best_val_loss:
-                    best_val_loss = val_loss
-                    patience_counter = 0
-                    best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-                else:
-                    patience_counter += 1
-
-                print(
-                    f"  Epoch {epoch:3d} | "
-                    f"train_acc={train_m['accuracy']:.3f} val_acc={val_m['accuracy']:.3f} | "
-                    f"sortino={val_m['sortino']:.3f} | {elapsed:.1f}s"
-                )
-
-                if patience_counter >= self.patience:
-                    print(f"  Early stopping at epoch {epoch}")
-                    break
-
-            # Load best model and evaluate on test set
-            if best_state is not None:
-                model.load_state_dict(best_state)
-            test_m = self._eval_epoch(model, test_loader, criterion)
-            print(f"  TEST | acc={test_m['accuracy']:.3f} sortino={test_m['sortino']:.3f}")
-
-            results.append({
-                "fold": fold,
-                "test_accuracy": test_m["accuracy"],
-                "test_sortino": test_m["sortino"],
-                "best_val_loss": best_val_loss,
-            })
-
-            # Save fold model
-            torch.save(
-                {"model_state": best_state, "fold": fold, "hidden_dim": self.hidden_dim,
-                 "input_dim": input_dim, "test_metrics": test_m},
-                f"model_fold_{fold}.pt",
+            print(
+                f"  Epoch {epoch:3d} | "
+                f"train_acc={train_m['accuracy']:.3f} val_acc={val_m['accuracy']:.3f} | "
+                f"sortino={val_m['sortino']:.3f} | {elapsed:.1f}s"
             )
 
-            start += fold_step
-            fold += 1
+            if patience_counter >= self.patience:
+                print(f"  Early stopping at epoch {epoch}")
+                break
 
-        return results
+        # Load best model and backtest
+        if best_state is not None:
+            model.load_state_dict(best_state)
+        test_m = self._eval_epoch(model, test_loader, criterion)
+        print(f"\n  BACKTEST | acc={test_m['accuracy']:.3f} sortino={test_m['sortino']:.3f}")
+
+        torch.save(
+            {"model_state": best_state, "hidden_dim": self.hidden_dim,
+             "input_dim": input_dim, "test_metrics": test_m},
+            "model.pt",
+        )
+        print("  Saved model.pt")
+
+        return {
+            "test_accuracy": test_m["accuracy"],
+            "test_sortino": test_m["sortino"],
+            "best_val_loss": best_val_loss,
+        }

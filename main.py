@@ -84,21 +84,13 @@ def train(args: argparse.Namespace) -> None:
         patience=config.patience,
     )
 
-    results = trainer.walk_forward(
-        df,
-        train_months=config.train_months,
-        val_months=config.val_months,
-        test_months=config.test_months,
-    )
+    result = trainer.train_backtest(df)
 
     print("\n" + "=" * 60)
-    print("WALK-FORWARD RESULTS")
+    print("RESULTS")
     print("=" * 60)
-    for r in results:
-        print(f"  Fold {r['fold']}: acc={r['test_accuracy']:.3f} sortino={r['test_sortino']:.3f}")
-    avg_acc = np.mean([r["test_accuracy"] for r in results])
-    avg_sort = np.mean([r["test_sortino"] for r in results])
-    print(f"  Average: acc={avg_acc:.3f} sortino={avg_sort:.3f}")
+    print(f"  Backtest accuracy: {result['test_accuracy']:.3f}")
+    print(f"  Backtest sortino:  {result['test_sortino']:.3f}")
 
 
 def infer(args: argparse.Namespace) -> None:
