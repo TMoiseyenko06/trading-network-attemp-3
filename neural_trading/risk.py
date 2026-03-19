@@ -10,12 +10,12 @@ class RiskConfig:
     """Risk parameters — these are non-negotiable hard limits."""
     daily_loss_limit: float = -500.0          # max daily loss in dollars
     trailing_drawdown_limit: float = -2000.0  # max trailing drawdown
-    min_confidence: float = 0.6               # minimum network confidence to trade
+    min_confidence: float = 0.80              # only take high-conviction trades
     cooldown_bars: int = 5                    # bars to wait after consecutive losses
     consecutive_loss_trigger: int = 3         # losses before cooldown activates
     max_position_size: int = 4                # max contracts
     drawdown_scale_start: float = 0.5         # start scaling at 50% of drawdown limit
-    min_rr_ratio: float = 0.5                 # minimum risk/reward ratio (lower = more trades taken)
+    min_rr_ratio: float = 1.5                 # minimum R:R — only take trades with edge
 
 
 @dataclass
