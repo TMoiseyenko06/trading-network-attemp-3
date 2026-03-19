@@ -55,8 +55,13 @@ def detect_gpu() -> GPUProfile:
     use_compile = cc >= (8, 0) and hasattr(torch, "compile")
 
     # Scale batch size based on VRAM
-    if mem_gb >= 20:      # A100 / 4090 / 3090 tier
-        batch_size = 512
+    if mem_gb >= 40:      # A100-80GB tier — massive VRAM headroom
+        batch_size = 4096
+        model_scale = 2.0
+        grad_accum = 1
+        workers = 8
+    elif mem_gb >= 20:    # 4090 / 3090 / A100-40GB tier
+        batch_size = 2048
         model_scale = 2.0
         grad_accum = 1
         workers = 8

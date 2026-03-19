@@ -94,19 +94,22 @@ class WalkForwardTrainer:
         self, X: np.ndarray, y_cls: np.ndarray, y_mag: np.ndarray,
         y_tp: np.ndarray, y_sl: np.ndarray, shuffle: bool = True,
     ) -> DataLoader:
+        # Move tensors to GPU upfront — avoids CPU→GPU transfers every batch
+        # and eliminates the data-loading bottleneck entirely
+        dev = self.device
         dataset = TensorDataset(
-            torch.from_numpy(X),
-            torch.from_numpy(y_cls.astype(np.int64)),
-            torch.from_numpy(y_mag),
-            torch.from_numpy(y_tp),
-            torch.from_numpy(y_sl),
+            torch.from_numpy(X).to(dev),
+            torch.from_numpy(y_cls.astype(np.int64)).to(dev),
+            torch.from_numpy(y_mag).to(dev),
+            torch.from_numpy(y_tp).to(dev),
+            torch.from_numpy(y_sl).to(dev),
         )
         return DataLoader(
             dataset,
             batch_size=self.gpu.batch_size,
             shuffle=shuffle,
-            num_workers=0,  # avoid fork() issues with CUDA
-            pin_memory=self.gpu.pin_memory,
+            num_workers=0,
+            pin_memory=False,  # already on GPU
         )
 
     def _build_model(self, input_dim: int) -> NeuralOHLCVNet:
@@ -119,9 +122,8 @@ class WalkForwardTrainer:
             num_classes=3,
         ).to(self.device)
 
-        # Skip torch.compile for now — can mask gradient issues
-        # if self.gpu.use_compile:
-        #     model = torch.compile(model)
+        if self.gpu.use_compile:
+            model = torch.compile(model)
 
         return model
 
@@ -138,12 +140,7 @@ class WalkForwardTrainer:
         n_batches = 0
 
         for step, (X, y_cls, y_mag, y_tp, y_sl) in enumerate(loader):
-            X = X.to(self.device, non_blocking=True)
-            y_cls = y_cls.to(self.device, non_blocking=True)
-            y_mag = y_mag.to(self.device, non_blocking=True)
-            y_tp = y_tp.to(self.device, non_blocking=True)
-            y_sl = y_sl.to(self.device, non_blocking=True)
-
+            # Data already on GPU from _make_loader
             with torch.amp.autocast("cuda", enabled=self.gpu.use_amp):
                 dir_logits, conf, pred_mag, pred_tp, pred_sl = model(X)
                 loss, metrics = criterion(dir_logits, conf, pred_mag, pred_tp, pred_sl, y_cls, y_mag, y_tp, y_sl)
@@ -186,12 +183,7 @@ class WalkForwardTrainer:
         n_batches = 0
 
         for X, y_cls, y_mag, y_tp, y_sl in loader:
-            X = X.to(self.device, non_blocking=True)
-            y_cls = y_cls.to(self.device, non_blocking=True)
-            y_mag = y_mag.to(self.device, non_blocking=True)
-            y_tp = y_tp.to(self.device, non_blocking=True)
-            y_sl = y_sl.to(self.device, non_blocking=True)
-
+            # Data already on GPU from _make_loader
             with torch.amp.autocast("cuda", enabled=self.gpu.use_amp):
                 dir_logits, conf, pred_mag, pred_tp, pred_sl = model(X)
                 _, metrics = criterion(dir_logits, conf, pred_mag, pred_tp, pred_sl, y_cls, y_mag, y_tp, y_sl)
