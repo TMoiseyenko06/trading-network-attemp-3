@@ -20,10 +20,10 @@ class Config:
     val_months: int = 1
     test_months: int = 1
 
-    # Risk (prop firm consistency — frequent small trades)
-    daily_loss_limit: float = -500.0    # tighter daily limit for prop firm
+    # Risk (selective high-conviction trading)
+    daily_loss_limit: float = -500.0
     trailing_drawdown_limit: float = -2000.0
-    min_confidence: float = 0.45        # lower bar — take more signals, let R:R do the work
-    cooldown_bars: int = 3              # shorter cooldown to stay active
-    consecutive_loss_trigger: int = 4   # more patience before cooldown kicks in
-    max_position_size: int = 2          # smaller size, higher frequency
+    min_confidence: float = 0.65        # only trade on high-conviction signals
+    cooldown_bars: int = 5              # longer cooldown between trades
+    consecutive_loss_trigger: int = 3   # tighter loss discipline
+    max_position_size: int = 2

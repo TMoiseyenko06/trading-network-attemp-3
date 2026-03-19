@@ -286,9 +286,10 @@ class WalkForwardTrainer:
             rr = val_m.get("rr_ratio", 0)
             pnl = val_m.get("pnl", 0)
             flat = val_m.get("flat_rate", 0)
+            trade_acc = val_m.get("trade_acc", 0)
             print(
                 f"  Epoch {epoch:3d} | "
-                f"train_acc={train_m['accuracy']:.3f} val_acc={val_m['accuracy']:.3f} | "
+                f"val_acc={val_m['accuracy']:.3f} trade_acc={trade_acc:.3f} | "
                 f"loss={val_m['cls_loss']:.4f} pnl={pnl:.5f} sortino={val_m['sortino']:.3f} "
                 f"R:R={rr:.2f} flat={flat:.0%} | "
                 f"gnorm={gnorm:.4f} | {elapsed:.1f}s"
@@ -304,8 +305,9 @@ class WalkForwardTrainer:
         test_m = self._eval_epoch(model, test_loader, criterion)
         test_pnl = test_m.get("pnl", 0)
         test_flat = test_m.get("flat_rate", 0)
-        print(f"\n  BACKTEST | acc={test_m['accuracy']:.3f} pnl={test_pnl:.5f} "
-              f"sortino={test_m['sortino']:.3f} flat={test_flat:.0%}")
+        test_trade_acc = test_m.get("trade_acc", 0)
+        print(f"\n  BACKTEST | acc={test_m['accuracy']:.3f} trade_acc={test_trade_acc:.3f} "
+              f"pnl={test_pnl:.5f} sortino={test_m['sortino']:.3f} flat={test_flat:.0%}")
 
         torch.save(
             {"model_state": best_state, "hidden_dim": self.hidden_dim,
@@ -437,9 +439,10 @@ class WalkForwardTrainer:
             rr = val_m.get("rr_ratio", 0)
             pnl = val_m.get("pnl", 0)
             flat = val_m.get("flat_rate", 0)
+            trade_acc = val_m.get("trade_acc", 0)
             print(
                 f"  Epoch {epoch:3d} | "
-                f"train_acc={train_m['accuracy']:.3f} val_acc={val_m['accuracy']:.3f} | "
+                f"val_acc={val_m['accuracy']:.3f} trade_acc={trade_acc:.3f} | "
                 f"loss={val_m['cls_loss']:.4f} pnl={pnl:.5f} sortino={val_m['sortino']:.3f} "
                 f"R:R={rr:.2f} flat={flat:.0%} | "
                 f"gnorm={gnorm:.4f} | {elapsed:.1f}s"
@@ -455,8 +458,9 @@ class WalkForwardTrainer:
         test_m = self._eval_epoch(model, test_loader, criterion)
         test_pnl = test_m.get("pnl", 0)
         test_flat = test_m.get("flat_rate", 0)
-        print(f"\n  BACKTEST | acc={test_m['accuracy']:.3f} pnl={test_pnl:.5f} "
-              f"sortino={test_m['sortino']:.3f} flat={test_flat:.0%}")
+        test_trade_acc = test_m.get("trade_acc", 0)
+        print(f"\n  BACKTEST | acc={test_m['accuracy']:.3f} trade_acc={test_trade_acc:.3f} "
+              f"pnl={test_pnl:.5f} sortino={test_m['sortino']:.3f} flat={test_flat:.0%}")
 
         torch.save(
             {"model_state": best_state, "hidden_dim": self.hidden_dim,
