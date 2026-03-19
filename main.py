@@ -20,6 +20,7 @@ from neural_trading.trainer import WalkForwardTrainer
 from neural_trading.risk import RiskManager, RiskConfig
 from neural_trading.preprocessing import compute_features, add_time_features, build_sequences
 from neural_trading.live import LiveTrader
+from neural_trading.backtest import Backtester
 
 
 def load_ohlcv(path: str) -> pd.DataFrame:
@@ -159,6 +160,37 @@ def infer(args: argparse.Namespace) -> None:
     print(f"  Risk state: {risk_mgr.summary()}")
 
 
+def backtest(args: argparse.Namespace) -> None:
+    """Run realistic backtest with P&L simulation and equity curve."""
+    config = Config()
+
+    bt = Backtester(
+        model_path=args.model,
+        point_value=args.point_value,
+        starting_equity=args.equity,
+        commission_per_contract=args.commission,
+        max_bars_in_trade=config.max_bars,
+        risk_config=RiskConfig(
+            daily_loss_limit=config.daily_loss_limit,
+            trailing_drawdown_limit=config.trailing_drawdown_limit,
+            min_confidence=config.min_confidence,
+            cooldown_bars=config.cooldown_bars,
+            consecutive_loss_trigger=config.consecutive_loss_trigger,
+            max_position_size=config.max_position_size,
+        ),
+        lookback=config.lookback,
+    )
+
+    df = load_ohlcv(args.data)
+    print(f"Loaded {len(df)} bars from {args.data}")
+    print(f"Date range: {df.index[0]} -> {df.index[-1]}")
+
+    result = bt.run(df, test_pct=args.test_pct)
+
+    bt.plot_equity_curve(result, save_path=args.plot)
+    bt.export_trades(result, save_path=args.trades)
+
+
 def live(args: argparse.Namespace) -> None:
     """Run live paper trading with Databento feed."""
     trader = LiveTrader(
@@ -183,6 +215,16 @@ def main():
     infer_p.add_argument("--data", required=True, help="Path to OHLCV data (.dbn or .csv)")
     infer_p.add_argument("--model", required=True, help="Path to saved model checkpoint")
 
+    bt_p = sub.add_parser("backtest", help="Run realistic backtest with P&L and equity curve")
+    bt_p.add_argument("--data", required=True, help="Path to OHLCV data (.dbn or .csv)")
+    bt_p.add_argument("--model", default="model.pt", help="Path to saved model checkpoint")
+    bt_p.add_argument("--equity", type=float, default=50000.0, help="Starting equity (default: 50000)")
+    bt_p.add_argument("--point-value", type=float, default=20.0, help="Point value per contract (NQ=20, ES=50)")
+    bt_p.add_argument("--commission", type=float, default=4.50, help="Round-trip commission per contract")
+    bt_p.add_argument("--test-pct", type=float, default=0.2, help="Fraction of data for test (default: 0.2)")
+    bt_p.add_argument("--plot", default="equity_curve.png", help="Path to save equity curve plot")
+    bt_p.add_argument("--trades", default="trades.csv", help="Path to save trade log CSV")
+
     live_p = sub.add_parser("live", help="Run live paper trading with Databento feed")
     live_p.add_argument("--model", default="model.pt", help="Path to saved model checkpoint")
     live_p.add_argument("--dataset", default="GLBX.MDP3", help="Databento dataset (default: GLBX.MDP3)")
@@ -196,6 +238,8 @@ def main():
         train(args)
     elif args.command == "infer":
         infer(args)
+    elif args.command == "backtest":
+        backtest(args)
     elif args.command == "live":
         live(args)
     else:
