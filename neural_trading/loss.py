@@ -26,7 +26,7 @@ class TradingLoss(nn.Module):
         confidence_weight: float = 0.2,
         tp_sl_weight: float = 0.3,
         pnl_weight: float = 1.5,
-        selectivity_weight: float = 0.5,
+        selectivity_weight: float = 5.0,
         class_weights: torch.Tensor | None = None,
     ):
         super().__init__()
@@ -84,24 +84,25 @@ class TradingLoss(nn.Module):
 
         # 6. Direct P&L maximization — quality-gated profit objective
         #    Uses TRUE TP/SL so the model can't game profit by inflating TP / shrinking SL.
-        #    Gated by confidence: the model only gets rewarded for trades it's confident
-        #    about. This teaches it to be selective — high confidence on good setups,
-        #    low confidence (flat) on marginal ones.
-        conf_gate = torch.sigmoid(confidence).float()  # (B,) in [0, 1]
+        #    Gated by BOTH confidence and trade probability:
+        #    - p_trade: model must predict a direction (not flat) to earn PnL reward
+        #    - conf_gate: model must be confident to earn full PnL reward
+        #    This creates a natural trade-off: trading earns profit but costs selectivity.
+        p_flat = probs[:, 2]            # (B,) per-sample flat probability
+        p_trade = 1.0 - p_flat          # how much the model wants to trade this bar
+        conf_gate = torch.sigmoid(confidence).float()
         expected_pnl = soft_correct * true_tp.float() - (1.0 - soft_correct) * true_sl.float()
-        # Confidence-gated: reward scales with how confident the model is
-        gated_pnl = expected_pnl * conf_gate
-        pnl_loss = -gated_pnl.mean()  # negative because we maximize profit
+        # Double-gated: must predict trade AND be confident to get reward
+        gated_pnl = expected_pnl * p_trade * conf_gate
+        pnl_loss = -gated_pnl.mean()
 
-        # 7. Selectivity reward — encourage few, high-quality trades
-        #    Instead of penalizing flatness, we reward it. The model should be flat
-        #    most of the time (target ~95-98%) and only trade on strong setups.
-        #    Penalty kicks in when trading too aggressively (flat < target).
-        p_flat_mean = probs[:, 2].mean()
-        target_flat_rate = 0.95  # be flat ~95% of bars = ~20 trades per 390-bar session
-        # Penalize overtrading: if flat rate drops below target, loss increases
-        overtrading_penalty = F.relu(target_flat_rate - p_flat_mean)
-        # Also mildly penalize never trading at all (flat > 99.5%)
+        # 7. Selectivity — squared penalty for overtrading, grows fast when far from target
+        #    Target ~95% flat = ~20 trades per 390-bar session (~5 round trips)
+        p_flat_mean = p_flat.mean()
+        target_flat_rate = 0.95
+        # Squared so penalty grows quadratically — 0.7 gap costs 4x more than 0.35 gap
+        overtrading_penalty = F.relu(target_flat_rate - p_flat_mean) ** 2
+        # Mild linear penalty for never trading
         undertrading_penalty = F.relu(p_flat_mean - 0.995) * 2.0
         selectivity_loss = overtrading_penalty + undertrading_penalty
 
