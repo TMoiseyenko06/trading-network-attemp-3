@@ -19,6 +19,7 @@ from neural_trading.model import NeuralOHLCVNet
 from neural_trading.trainer import WalkForwardTrainer
 from neural_trading.risk import RiskManager, RiskConfig
 from neural_trading.preprocessing import compute_features, add_time_features, build_sequences
+from neural_trading.live import LiveTrader
 
 
 def load_ohlcv(path: str) -> pd.DataFrame:
@@ -155,6 +156,19 @@ def infer(args: argparse.Namespace) -> None:
     print(f"  Risk state: {risk_mgr.summary()}")
 
 
+def live(args: argparse.Namespace) -> None:
+    """Run live paper trading with Databento feed."""
+    trader = LiveTrader(
+        model_path=args.model,
+        dataset=args.dataset,
+        schema=args.schema,
+        symbols=args.symbols,
+        stype_in=args.stype,
+        api_key=args.api_key,
+    )
+    trader.run()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Neural OHLCV Trading System")
     sub = parser.add_subparsers(dest="command")
@@ -166,11 +180,21 @@ def main():
     infer_p.add_argument("--data", required=True, help="Path to OHLCV data (.dbn or .csv)")
     infer_p.add_argument("--model", required=True, help="Path to saved model checkpoint")
 
+    live_p = sub.add_parser("live", help="Run live paper trading with Databento feed")
+    live_p.add_argument("--model", default="model.pt", help="Path to saved model checkpoint")
+    live_p.add_argument("--dataset", default="GLBX.MDP3", help="Databento dataset (default: GLBX.MDP3)")
+    live_p.add_argument("--schema", default="ohlcv-1m", help="OHLCV schema (ohlcv-1s, ohlcv-1m, ohlcv-1h)")
+    live_p.add_argument("--symbols", nargs="+", default=["NQ.c.0"], help="Symbols to subscribe to")
+    live_p.add_argument("--stype", default="continuous", help="Symbol type (continuous, raw_symbol, etc.)")
+    live_p.add_argument("--api-key", default=None, help="Databento API key (or set DATABENTO_API_KEY env)")
+
     args = parser.parse_args()
     if args.command == "train":
         train(args)
     elif args.command == "infer":
         infer(args)
+    elif args.command == "live":
+        live(args)
     else:
         parser.print_help()
 

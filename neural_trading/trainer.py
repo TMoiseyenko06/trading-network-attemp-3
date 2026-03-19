@@ -295,7 +295,9 @@ class WalkForwardTrainer:
 
         torch.save(
             {"model_state": best_state, "hidden_dim": self.hidden_dim,
-             "input_dim": input_dim, "test_metrics": test_m},
+             "input_dim": input_dim, "test_metrics": test_m,
+             "feat_mean": self._feat_mean.to_dict(),
+             "feat_std": self._feat_std.to_dict()},
             "model.pt",
         )
         print("  Saved model.pt")
