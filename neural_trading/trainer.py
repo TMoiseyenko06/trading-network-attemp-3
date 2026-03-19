@@ -287,11 +287,12 @@ class WalkForwardTrainer:
             pnl = val_m.get("pnl", 0)
             flat = val_m.get("flat_rate", 0)
             trade_acc = val_m.get("trade_acc", 0)
+            avg_conf = val_m.get("avg_trade_conf", 0)
             print(
                 f"  Epoch {epoch:3d} | "
                 f"val_acc={val_m['accuracy']:.3f} trade_acc={trade_acc:.3f} | "
                 f"loss={val_m['cls_loss']:.4f} pnl={pnl:.5f} sortino={val_m['sortino']:.3f} "
-                f"R:R={rr:.2f} flat={flat:.0%} | "
+                f"R:R={rr:.2f} flat={flat:.0%} conf={avg_conf:.2f} | "
                 f"gnorm={gnorm:.4f} | {elapsed:.1f}s"
             )
 
@@ -440,11 +441,12 @@ class WalkForwardTrainer:
             pnl = val_m.get("pnl", 0)
             flat = val_m.get("flat_rate", 0)
             trade_acc = val_m.get("trade_acc", 0)
+            avg_conf = val_m.get("avg_trade_conf", 0)
             print(
                 f"  Epoch {epoch:3d} | "
                 f"val_acc={val_m['accuracy']:.3f} trade_acc={trade_acc:.3f} | "
                 f"loss={val_m['cls_loss']:.4f} pnl={pnl:.5f} sortino={val_m['sortino']:.3f} "
-                f"R:R={rr:.2f} flat={flat:.0%} | "
+                f"R:R={rr:.2f} flat={flat:.0%} conf={avg_conf:.2f} | "
                 f"gnorm={gnorm:.4f} | {elapsed:.1f}s"
             )
 
