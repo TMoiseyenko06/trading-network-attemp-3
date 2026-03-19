@@ -170,14 +170,17 @@ class LiveTrader:
         self._last_day = ts.day
 
         if not self.buffer.ready:
-            if self._bar_count % 10 == 0:
-                print(f"  Buffering... {self.buffer.bar_count}/{self.buffer.min_bars} bars")
+            pct = self.buffer.bar_count / self.buffer.min_bars * 100
+            print(f"  [{ts.strftime('%H:%M:%S')}] Buffering {self.buffer.bar_count}/{self.buffer.min_bars} "
+                  f"({pct:.0f}%) | {c:.2f}")
             return
 
         # Run inference
         signal = self._infer()
-        if signal is not None:
-            self._handle_signal(signal, ts)
+        if signal is None:
+            print(f"  [{ts.strftime('%H:%M:%S')}] bar #{self._bar_count} | {c:.2f} | no signal")
+            return
+        self._handle_signal(signal, ts, c)
 
     def _infer(self) -> Optional[dict]:
         """Run model inference on current buffer."""
@@ -225,7 +228,7 @@ class LiveTrader:
             "sl_pct": sl,
         }
 
-    def _handle_signal(self, signal: dict, ts: datetime) -> None:
+    def _handle_signal(self, signal: dict, ts: datetime, close_price: float = 0) -> None:
         """Process a model signal through risk management and log it."""
         direction = signal["direction"]
         conf = signal["confidence"]
@@ -270,8 +273,14 @@ class LiveTrader:
                     "bars_held": 0,
                 }
         else:
-            # Only log blocked trades if they were actionable (not FLAT)
-            if direction != 2:
+            if direction == 2:
+                # FLAT — just show a heartbeat line
+                print(
+                    f"  [{ts_str}] #{self._signal_count:4d} "
+                    f" FLAT  @ {last_close:.2f} | "
+                    f"conf={conf:.2f} ({prob_str})"
+                )
+            else:
                 print(
                     f"  [{ts_str}] #{self._signal_count:4d} "
                     f"{dir_label:5s} BLOCKED | {reason} | "
