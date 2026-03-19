@@ -141,7 +141,7 @@ def infer(args: argparse.Namespace) -> None:
         dir_logits, confidence, magnitude, pred_tp, pred_sl = model(X)
 
     probs = torch.softmax(dir_logits, dim=1).cpu().numpy()[0]
-    conf = confidence.cpu().item()
+    conf = torch.sigmoid(confidence).cpu().item()
     mag = magnitude.cpu().item()
     tp = pred_tp.cpu().item()
     sl = pred_sl.cpu().item()

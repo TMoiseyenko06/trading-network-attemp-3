@@ -134,7 +134,7 @@ class DecisionHead(nn.Module):
         # x: (batch, seq_len, hidden_dim) — take last timestep
         h = self.shared(x[:, -1, :])
         direction = self.direction(h)              # raw logits
-        confidence = torch.sigmoid(self.confidence(h)).squeeze(-1)
+        confidence = self.confidence(h).squeeze(-1)  # raw logit; sigmoid applied in loss/inference
         magnitude = torch.relu(self.magnitude(h)).squeeze(-1)
         # TP/SL as positive percentages via softplus (always > 0)
         pred_tp = nn.functional.softplus(self.tp_head(h)).squeeze(-1)
