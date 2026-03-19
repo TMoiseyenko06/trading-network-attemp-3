@@ -14,7 +14,7 @@ class TradingLoss(nn.Module):
         3. Sortino ratio using detached TP/SL (teaches direction quality)
         4. Confidence calibration via soft correctness probabilities
         5. TP/SL regression: Huber loss on predicted take-profit and stop-loss
-        6. Direct P&L maximization: expected profit gated by sharp confidence threshold
+        6. Direct P&L maximization: expected profit with soft confidence gate
         7. Selectivity: heavy penalty for overtrading (target 95% flat)
         8. Low-conviction penalty: per-sample cost for trading without confidence
     """
@@ -89,16 +89,14 @@ class TradingLoss(nn.Module):
 
         # 6. Direct P&L maximization — quality-gated profit objective
         #    Uses TRUE TP/SL so the model can't game profit by inflating TP / shrinking SL.
-        #    Sharp confidence gate: steep sigmoid centered at conf_threshold.
-        #    Below threshold → near-zero reward. Forces model to only trade when confident.
+        #    Soft confidence gate lets PnL signal through for learning direction quality.
+        #    Selectivity (#7) and low-conviction penalty (#8) handle trade filtering.
         p_flat = probs[:, 2]            # (B,) per-sample flat probability
         p_trade = 1.0 - p_flat          # how much the model wants to trade this bar
         conf_sig = torch.sigmoid(confidence).float()
-        # Sharp gate: steepness=10 makes this ~0.12 at conf=0.5, ~1 above 0.85
-        # (softer than 20 so the model can earn PnL reward during early training)
-        conf_gate = torch.sigmoid(10.0 * (conf_sig - self.conf_threshold))
+        conf_gate = conf_sig            # soft gate — preserves learning signal
         expected_pnl = soft_correct * true_tp.float() - (1.0 - soft_correct) * true_sl.float()
-        # Double-gated: must predict trade AND be highly confident to get reward
+        # Double-gated: must predict trade AND be confident to get reward
         gated_pnl = expected_pnl * p_trade * conf_gate
         pnl_loss = -gated_pnl.mean()
 
