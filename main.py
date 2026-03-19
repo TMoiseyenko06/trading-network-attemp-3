@@ -1,5 +1,11 @@
 """Main entry point — load data, configure GPU, train, and run inference."""
 
+import warnings
+import os
+warnings.filterwarnings("ignore", message=".*torch.jit.script_method.*")
+warnings.filterwarnings("ignore", message=".*use of fork\\(\\) may lead to deadlocks.*")
+os.environ.setdefault("PYTHONWARNINGS", "ignore::DeprecationWarning")
+
 import argparse
 import sys
 import torch
