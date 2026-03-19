@@ -12,19 +12,18 @@ class TradingLoss(nn.Module):
         1. Cross-entropy for direction classification (with optional class weights)
         2. MSE for magnitude prediction
         3. PnL-aware Sortino using predicted TP/SL for realistic profit estimation
+           (TP/SL detached — Sortino only teaches direction, not TP/SL values)
         4. Confidence calibration via soft correctness probabilities
         5. TP/SL regression: Huber loss on predicted take-profit and stop-loss
-        6. Risk/reward penalty: discourages TP < SL (bad risk/reward ratio)
     """
 
     def __init__(
         self,
         cls_weight: float = 1.0,
         mag_weight: float = 0.3,
-        sortino_weight: float = 0.5,
+        sortino_weight: float = 0.3,
         confidence_weight: float = 0.2,
         tp_sl_weight: float = 0.5,
-        rr_weight: float = 0.4,
         class_weights: torch.Tensor | None = None,
     ):
         super().__init__()
@@ -33,7 +32,6 @@ class TradingLoss(nn.Module):
         self.sortino_weight = sortino_weight
         self.confidence_weight = confidence_weight
         self.tp_sl_weight = tp_sl_weight
-        self.rr_weight = rr_weight
         self.register_buffer("class_weights", class_weights)
 
     def forward(
@@ -56,20 +54,23 @@ class TradingLoss(nn.Module):
         mag_loss = F.mse_loss(pred_magnitude, true_magnitude)
 
         # 3. PnL-aware Sortino using predicted TP/SL
-        # Instead of just direction * magnitude, estimate realistic PnL:
-        # - Correct prediction → profit ≈ pred_tp
-        # - Wrong prediction → loss ≈ -pred_sl
-        # This forces the model to care about TP/SL quality, not just direction
+        # Detach TP/SL so Sortino only trains direction, not TP/SL values.
+        # Without detach, the model learns to max TP / min SL regardless of data
+        # because that directly increases the Sortino numerator.
         probs = F.softmax(direction_logits.float(), dim=1)  # (B, 3)
         true_onehot = F.one_hot(true_labels, num_classes=direction_logits.shape[1]).float()
         soft_correct = (probs * true_onehot).sum(dim=1)  # (B,) in [0, 1]
 
         # Realistic PnL: win → earn TP, lose → pay SL
-        soft_pnl = soft_correct * pred_tp.float() - (1.0 - soft_correct) * pred_sl.float()
+        tp_detached = pred_tp.detach().float()
+        sl_detached = pred_sl.detach().float()
+        soft_pnl = soft_correct * tp_detached - (1.0 - soft_correct) * sl_detached
         downside = torch.clamp(soft_pnl, max=0)
         downside_var = (downside ** 2).mean()
-        downside_std = torch.sqrt(downside_var + 1e-6)
-        sortino = -(soft_pnl.mean() / downside_std)
+        # Larger epsilon prevents gradient explosion when all PnLs are positive
+        # (downside_var ≈ 0 → sqrt gradient → 1/(2*sqrt(eps)) → huge under AMP)
+        downside_std = torch.sqrt(downside_var + 1e-4)
+        sortino = -(soft_pnl.mean() / downside_std).clamp(-10, 10)
 
         # 4. Confidence calibration (soft correctness as target)
         conf_loss = F.binary_cross_entropy_with_logits(
@@ -81,24 +82,20 @@ class TradingLoss(nn.Module):
         sl_loss = F.huber_loss(pred_sl, true_sl, delta=0.01)
         tp_sl_loss = tp_loss + sl_loss
 
-        # 6. Risk/reward penalty — penalize when TP < SL (bad R:R)
-        # ratio < 1 means risking more than potential gain
-        rr_ratio = pred_tp / (pred_sl + 1e-8)
-        # Penalize ratio below 1.0 (want TP >= SL)
-        rr_penalty = F.relu(1.0 - rr_ratio).mean()
-
         total = (
             self.cls_weight * cls_loss
             + self.mag_weight * mag_loss
             + self.sortino_weight * sortino
             + self.confidence_weight * conf_loss
             + self.tp_sl_weight * tp_sl_loss
-            + self.rr_weight * rr_penalty
         )
 
         # Accuracy metric (hard, for reporting only)
         hard_preds = direction_logits.argmax(dim=1)
         accuracy = (hard_preds == true_labels).float().mean().item()
+
+        # R:R for monitoring only (not in the loss)
+        rr_ratio = pred_tp / (pred_sl + 1e-8)
 
         metrics = {
             "cls_loss": cls_loss.item(),

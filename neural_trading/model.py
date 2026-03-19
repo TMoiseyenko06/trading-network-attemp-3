@@ -125,7 +125,7 @@ class DecisionHead(nn.Module):
       - max_sl_pct: ceiling so SL can't be "never hit"
     """
 
-    # Bounds are in log1p-space to match training targets
+    # Bounds in raw pct space (training targets are clipped to match)
     MIN_TP_PCT = 0.001    # ~24 NQ pts at 24000 — minimum meaningful TP
     MAX_TP_PCT = 0.015    # ~360 NQ pts — reasonable upper bound
     MIN_SL_PCT = 0.0005   # ~12 NQ pts — can't be tighter than noise
