@@ -54,7 +54,10 @@ class WalkForwardTrainer:
         valid_start = features.first_valid_index()
         features = features.loc[valid_start:]
         labels = labels.loc[valid_start:]
-        features = features.fillna(0)
+
+        # Replace inf/NaN before standardization — these come from
+        # pct_change() on the first row and division-by-zero edge cases
+        features = features.replace([np.inf, -np.inf], np.nan).fillna(0)
 
         # Standardize features (zero mean, unit variance) so the network
         # receives reasonably-scaled inputs instead of tiny pct-change values
