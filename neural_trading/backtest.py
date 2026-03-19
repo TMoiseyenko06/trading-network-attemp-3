@@ -57,6 +57,17 @@ class BacktestResult:
     avg_rr_realized: float = 0.0
     longest_drawdown_bars: int = 0
 
+    # Consistency metrics (prop firm requirements)
+    days_traded: int = 0
+    total_trading_days: int = 0
+    trading_day_pct: float = 0.0        # % of days with at least 1 trade
+    avg_trades_per_day: float = 0.0
+    avg_daily_pnl: float = 0.0
+    worst_day: float = 0.0
+    best_day: float = 0.0
+    profitable_days: int = 0
+    profitable_day_pct: float = 0.0
+
 
 class Backtester:
     """Bar-by-bar backtester that simulates trades with actual P&L.
@@ -421,6 +432,28 @@ class Backtester:
                 if len(downside) > 0 and downside.std() > 0:
                     result.sortino = float(daily_ret.mean() / downside.std() * np.sqrt(252))
 
+        # Consistency metrics
+        if trades and trades[0].entry_time is not None:
+            trade_days = set()
+            for t in trades:
+                if t.entry_time is not None:
+                    trade_days.add(t.entry_time.date())
+
+            if isinstance(equity_curve.index, pd.DatetimeIndex):
+                all_days = set(equity_curve.index.date)
+                result.total_trading_days = len(all_days)
+                result.days_traded = len(trade_days)
+                result.trading_day_pct = result.days_traded / max(result.total_trading_days, 1) * 100
+                result.avg_trades_per_day = result.total_trades / max(result.days_traded, 1)
+
+            if len(result.daily_pnl) > 0:
+                result.avg_daily_pnl = float(result.daily_pnl.mean())
+                result.worst_day = float(result.daily_pnl.min())
+                result.best_day = float(result.daily_pnl.max())
+                result.profitable_days = int((result.daily_pnl > 0).sum())
+                days_with_trades = len(result.daily_pnl[result.daily_pnl != 0])
+                result.profitable_day_pct = result.profitable_days / max(days_with_trades, 1) * 100
+
         return result
 
     def _print_report(self, r: BacktestResult) -> None:
@@ -444,6 +477,14 @@ class Backtester:
         print()
         print(f"  Sharpe (annual):   {r.sharpe:.2f}")
         print(f"  Sortino (annual):  {r.sortino:.2f}")
+        print()
+        print(f"  CONSISTENCY (Prop Firm)")
+        print(f"  Days traded:       {r.days_traded} / {r.total_trading_days} ({r.trading_day_pct:.0f}%)")
+        print(f"  Avg trades/day:    {r.avg_trades_per_day:.1f}")
+        print(f"  Profitable days:   {r.profitable_days} ({r.profitable_day_pct:.0f}%)")
+        print(f"  Avg daily P&L:     ${r.avg_daily_pnl:,.2f}")
+        print(f"  Best day:          ${r.best_day:,.2f}")
+        print(f"  Worst day:         ${r.worst_day:,.2f}")
         print(f"{'='*60}")
 
     def plot_equity_curve(self, result: BacktestResult, save_path: str = "equity_curve.png") -> None:

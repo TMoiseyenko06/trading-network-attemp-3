@@ -15,7 +15,7 @@ class RiskConfig:
     consecutive_loss_trigger: int = 3         # losses before cooldown activates
     max_position_size: int = 4                # max contracts
     drawdown_scale_start: float = 0.5         # start scaling at 50% of drawdown limit
-    min_rr_ratio: float = 0.8                 # minimum risk/reward ratio (TP/SL)
+    min_rr_ratio: float = 0.5                 # minimum risk/reward ratio (lower = more trades taken)
 
 
 @dataclass

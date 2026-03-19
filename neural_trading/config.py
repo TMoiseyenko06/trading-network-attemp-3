@@ -9,7 +9,7 @@ class Config:
 
     # Data
     lookback: int = 90                  # bars of history the network sees
-    max_bars: int = 20                  # forward window for labeling (network predicts its own TP/SL)
+    max_bars: int = 10                  # forward window for labeling — shorter = faster resolution
     vol_window: int = 20                # rolling window for volume z-score
 
     # Training
@@ -20,10 +20,10 @@ class Config:
     val_months: int = 1
     test_months: int = 1
 
-    # Risk (prop firm survival)
-    daily_loss_limit: float = -1250.0
-    trailing_drawdown_limit: float = -2250.0
-    min_confidence: float = 0.6
-    cooldown_bars: int = 5
-    consecutive_loss_trigger: int = 3
-    max_position_size: int = 4
+    # Risk (prop firm consistency — frequent small trades)
+    daily_loss_limit: float = -500.0    # tighter daily limit for prop firm
+    trailing_drawdown_limit: float = -2000.0
+    min_confidence: float = 0.45        # lower bar — take more signals, let R:R do the work
+    cooldown_bars: int = 3              # shorter cooldown to stay active
+    consecutive_loss_trigger: int = 4   # more patience before cooldown kicks in
+    max_position_size: int = 2          # smaller size, higher frequency

@@ -126,10 +126,11 @@ class DecisionHead(nn.Module):
     """
 
     # Bounds in raw pct space (training targets are clipped to match)
-    MIN_TP_PCT = 0.001    # ~24 NQ pts at 24000 — minimum meaningful TP
-    MAX_TP_PCT = 0.015    # ~360 NQ pts — reasonable upper bound
-    MIN_SL_PCT = 0.0005   # ~12 NQ pts — can't be tighter than noise
-    MAX_SL_PCT = 0.008    # ~192 NQ pts — prevents "never hit" SL
+    # Tuned for frequent scalping-style trades on NQ (prop firm consistency)
+    MIN_TP_PCT = 0.0004   # ~10 NQ pts at 24000 — tight but realistic scalp target
+    MAX_TP_PCT = 0.004    # ~96 NQ pts — cap to prevent model from waiting for home runs
+    MIN_SL_PCT = 0.0003   # ~7 NQ pts — tight stop, just above noise floor
+    MAX_SL_PCT = 0.003    # ~72 NQ pts — prevents wide stops that blow risk limits
 
     def __init__(self, hidden_dim: int, num_classes: int = 3):
         super().__init__()

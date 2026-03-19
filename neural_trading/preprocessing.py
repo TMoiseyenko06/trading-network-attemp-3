@@ -127,7 +127,7 @@ def dynamic_barrier_labels(
     target_tp = np.zeros(n, dtype=np.float64)
     target_sl = np.zeros(n, dtype=np.float64)
 
-    flat_threshold = 0.0005  # below this, label as flat/timeout
+    flat_threshold = 0.0002  # below this, label as flat/timeout (tighter = fewer flats = more trades)
 
     for i in range(n):
         entry = closes[i]
