@@ -14,22 +14,19 @@ class TradingLoss(nn.Module):
         3. Sortino ratio using detached TP/SL (teaches direction quality)
         4. Confidence calibration via soft correctness probabilities
         5. TP/SL regression: Huber loss on predicted take-profit and stop-loss
-        6. Direct P&L maximization: expected profit with soft confidence gate
-        7. Selectivity: heavy penalty for overtrading (target 95% flat)
-        8. Low-conviction penalty: per-sample cost for trading without confidence
+        6. Direct P&L maximization: expected profit with full gradient through TP/SL
+        7. Trade frequency bonus: penalizes the model for predicting FLAT too often
     """
 
     def __init__(
         self,
-        cls_weight: float = 0.4,
-        mag_weight: float = 0.1,
-        sortino_weight: float = 0.6,
+        cls_weight: float = 0.8,
+        mag_weight: float = 0.2,
+        sortino_weight: float = 0.2,
         confidence_weight: float = 0.2,
         tp_sl_weight: float = 0.3,
-        pnl_weight: float = 1.5,
-        selectivity_weight: float = 5.0,
-        low_conviction_weight: float = 0.0,  # disabled — risk manager handles filtering
-        conf_threshold: float = 0.7,
+        pnl_weight: float = 1.0,
+        frequency_weight: float = 0.3,
         class_weights: torch.Tensor | None = None,
     ):
         super().__init__()
@@ -39,9 +36,7 @@ class TradingLoss(nn.Module):
         self.confidence_weight = confidence_weight
         self.tp_sl_weight = tp_sl_weight
         self.pnl_weight = pnl_weight
-        self.selectivity_weight = selectivity_weight
-        self.low_conviction_weight = low_conviction_weight
-        self.conf_threshold = conf_threshold
+        self.frequency_weight = frequency_weight
         self.register_buffer("class_weights", class_weights)
 
     def forward(
@@ -87,34 +82,25 @@ class TradingLoss(nn.Module):
         sl_loss = F.huber_loss(pred_sl, true_sl, delta=0.01)
         tp_sl_loss = tp_loss + sl_loss
 
-        # 6. Direct P&L maximization — quality-gated profit objective
-        #    Uses TRUE TP/SL so the model can't game profit by inflating TP / shrinking SL.
-        #    Soft confidence gate lets PnL signal through for learning direction quality.
-        #    Selectivity (#7) and low-conviction penalty (#8) handle trade filtering.
-        p_flat = probs[:, 2]            # (B,) per-sample flat probability
-        p_trade = 1.0 - p_flat          # how much the model wants to trade this bar
-        conf_sig = torch.sigmoid(confidence).float()
-        conf_gate = conf_sig            # soft gate — preserves learning signal
-        expected_pnl = soft_correct * true_tp.float() - (1.0 - soft_correct) * true_sl.float()
-        # Double-gated: must predict trade AND be confident to get reward
-        gated_pnl = expected_pnl * p_trade * conf_gate
-        pnl_loss = -gated_pnl.mean()
+        # 6. Direct P&L maximization — the core profit objective
+        #    Expected PnL = P(correct) * TP - P(wrong) * SL
+        #    Full gradient flows through both direction AND TP/SL predictions.
+        #    The model learns to jointly optimize: pick good entries AND size TP/SL well.
+        #
+        #    We weight by trade probability (1 - P(flat)) so the model is incentivized
+        #    to actually take trades, not hide in FLAT to avoid losses.
+        p_trade = 1.0 - probs[:, 2]  # probability of NOT predicting flat
+        expected_pnl = soft_correct * pred_tp.float() - (1.0 - soft_correct) * pred_sl.float()
+        # Scale by trade probability: no reward for being right if you don't trade
+        weighted_pnl = expected_pnl * p_trade
+        pnl_loss = -weighted_pnl.mean()  # negative because we maximize profit
 
-        # 7. Selectivity — squared penalty for overtrading, grows fast when far from target
-        #    Target ~95% flat = ~20 trades per 390-bar session (~5 round trips)
-        p_flat_mean = p_flat.mean()
-        target_flat_rate = 0.95
-        # Squared so penalty grows quadratically — 0.7 gap costs 4x more than 0.35 gap
-        overtrading_penalty = F.relu(target_flat_rate - p_flat_mean) ** 2
-        # Mild linear penalty for never trading
-        undertrading_penalty = F.relu(p_flat_mean - 0.995) * 2.0
-        selectivity_loss = overtrading_penalty + undertrading_penalty
-
-        # 8. Low-conviction trade penalty — per-sample penalty for trading without
-        #    sufficient confidence. Directly punishes each bar where model wants to
-        #    trade (p_trade high) but confidence is below threshold.
-        low_conf_mask = (self.conf_threshold - conf_sig).clamp(min=0)  # >0 when under threshold
-        low_conviction_loss = (p_trade * low_conf_mask).mean()
+        # 7. Trade frequency bonus — penalize excessive FLAT predictions
+        #    Target: model should predict FLAT ≤ ~20% of the time
+        #    Penalty kicks in when P(flat) > target_flat_rate
+        p_flat_mean = probs[:, 2].mean()
+        target_flat_rate = 0.2
+        frequency_penalty = F.relu(p_flat_mean - target_flat_rate)
 
         total = (
             self.cls_weight * cls_loss
@@ -123,11 +109,10 @@ class TradingLoss(nn.Module):
             + self.confidence_weight * conf_loss
             + self.tp_sl_weight * tp_sl_loss
             + self.pnl_weight * pnl_loss
-            + self.selectivity_weight * selectivity_loss
-            + self.low_conviction_weight * low_conviction_loss
+            + self.frequency_weight * frequency_penalty
         )
 
-        # Accuracy metric (hard, for reporting only — only on non-flat predictions)
+        # Accuracy metric (hard, for reporting only)
         hard_preds = direction_logits.argmax(dim=1)
         accuracy = (hard_preds == true_labels).float().mean().item()
 
@@ -140,10 +125,11 @@ class TradingLoss(nn.Module):
 
         # Metrics for monitoring
         rr_ratio = pred_tp / (pred_sl + 1e-8)
-        avg_pnl = gated_pnl.mean().item()
+        avg_pnl = expected_pnl.mean().item()
         flat_rate = p_flat_mean.item()
 
         # Average confidence on trades (where model chose to trade)
+        conf_sig = torch.sigmoid(confidence).float()
         trade_conf_mask = hard_preds != 2
         if trade_conf_mask.any():
             avg_trade_conf = conf_sig[trade_conf_mask].mean().item()
@@ -162,6 +148,5 @@ class TradingLoss(nn.Module):
             "accuracy": accuracy,
             "trade_acc": trade_accuracy,
             "avg_trade_conf": avg_trade_conf,
-            "low_conv_loss": low_conviction_loss.item(),
         }
         return total, metrics
