@@ -65,6 +65,9 @@ class WalkForwardTrainer:
         self._feat_std = features.std().replace(0, 1)
         features = (features - self._feat_mean) / self._feat_std
 
+        # Clip extreme outliers to prevent float16 overflow in AMP
+        features = features.clip(-10, 10)
+
         # Diagnostics
         print(f"\n  Features ({features.shape[1]}): {list(features.columns)}")
         print(f"  Feature ranges after standardization:")
@@ -76,6 +79,14 @@ class WalkForwardTrainer:
         lbl_counts = np.bincount(labels["label"].values.astype(int), minlength=3)
         print(f"\n  Label distribution: 0(win)={lbl_counts[0]} 1(lose)={lbl_counts[1]} 2(flat)={lbl_counts[2]}")
         print(f"  Magnitude: mean={labels['magnitude'].mean():.6f} std={labels['magnitude'].std():.6f}")
+
+        # Log-transform magnitude/TP/SL targets to tame heavy tails
+        # (raw magnitudes have mean=137, std=2855 which blows up MSE in float16)
+        labels = labels.copy()
+        labels["magnitude"] = np.log1p(labels["magnitude"])
+        if "target_tp" in labels.columns:
+            labels["target_tp"] = np.log1p(labels["target_tp"])
+            labels["target_sl"] = np.log1p(labels["target_sl"])
 
         return build_sequences(features, labels, self.lookback)
 
