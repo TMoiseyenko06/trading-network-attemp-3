@@ -80,13 +80,20 @@ class WalkForwardTrainer:
         print(f"\n  Label distribution: 0(win)={lbl_counts[0]} 1(lose)={lbl_counts[1]} 2(flat)={lbl_counts[2]}")
         print(f"  Magnitude: mean={labels['magnitude'].mean():.6f} std={labels['magnitude'].std():.6f}")
 
-        # Log-transform magnitude/TP/SL targets to tame heavy tails
+        # Log-transform magnitude to tame heavy tails
         # (raw magnitudes have mean=137, std=2855 which blows up MSE in float16)
         labels = labels.copy()
         labels["magnitude"] = np.log1p(labels["magnitude"])
+        # TP/SL targets: clip to model's output range so the loss doesn't chase
+        # extreme MFE/MAE values the model can never output anyway
+        from .model import DecisionHead
         if "target_tp" in labels.columns:
-            labels["target_tp"] = np.log1p(labels["target_tp"])
-            labels["target_sl"] = np.log1p(labels["target_sl"])
+            labels["target_tp"] = labels["target_tp"].clip(
+                DecisionHead.MIN_TP_PCT, DecisionHead.MAX_TP_PCT,
+            )
+            labels["target_sl"] = labels["target_sl"].clip(
+                DecisionHead.MIN_SL_PCT, DecisionHead.MAX_SL_PCT,
+            )
 
         return build_sequences(features, labels, self.lookback)
 
@@ -276,10 +283,11 @@ class WalkForwardTrainer:
                 patience_counter += 1
 
             gnorm = train_m.get("grad_norm", 0)
+            rr = val_m.get("rr_ratio", 0)
             print(
                 f"  Epoch {epoch:3d} | "
                 f"train_acc={train_m['accuracy']:.3f} val_acc={val_m['accuracy']:.3f} | "
-                f"loss={val_m['cls_loss']:.4f} sortino={val_m['sortino']:.3f} | "
+                f"loss={val_m['cls_loss']:.4f} sortino={val_m['sortino']:.3f} R:R={rr:.2f} | "
                 f"gnorm={gnorm:.4f} | {elapsed:.1f}s"
             )
 

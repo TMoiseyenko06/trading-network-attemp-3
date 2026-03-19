@@ -116,7 +116,20 @@ class ContextMemory(nn.Module):
 
 
 class DecisionHead(nn.Module):
-    """Stage 3 — five simultaneous outputs from the final hidden state."""
+    """Stage 3 — five simultaneous outputs from the final hidden state.
+
+    TP/SL bounds prevent degenerate strategies:
+      - min_tp_pct: floor on take-profit so the model can't collect pennies
+      - max_tp_pct: ceiling so TP stays realistic
+      - min_sl_pct: floor on stop-loss (can't be tighter than noise)
+      - max_sl_pct: ceiling so SL can't be "never hit"
+    """
+
+    # Bounds are in log1p-space to match training targets
+    MIN_TP_PCT = 0.001    # ~24 NQ pts at 24000 — minimum meaningful TP
+    MAX_TP_PCT = 0.015    # ~360 NQ pts — reasonable upper bound
+    MIN_SL_PCT = 0.0005   # ~12 NQ pts — can't be tighter than noise
+    MAX_SL_PCT = 0.008    # ~192 NQ pts — prevents "never hit" SL
 
     def __init__(self, hidden_dim: int, num_classes: int = 3):
         super().__init__()
@@ -128,8 +141,8 @@ class DecisionHead(nn.Module):
         self.direction = nn.Linear(hidden_dim, num_classes)   # softmax over long/short/flat
         self.confidence = nn.Linear(hidden_dim, 1)            # sigmoid -> [0, 1]
         self.magnitude = nn.Linear(hidden_dim, 1)             # expected move size
-        self.tp_head = nn.Linear(hidden_dim, 1)               # take-profit pct (softplus)
-        self.sl_head = nn.Linear(hidden_dim, 1)               # stop-loss pct (softplus)
+        self.tp_head = nn.Linear(hidden_dim, 1)               # take-profit pct
+        self.sl_head = nn.Linear(hidden_dim, 1)               # stop-loss pct
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         # x: (batch, seq_len, hidden_dim) — take last timestep
@@ -137,9 +150,14 @@ class DecisionHead(nn.Module):
         direction = self.direction(h)              # raw logits
         confidence = self.confidence(h).squeeze(-1)  # raw logit; sigmoid applied in loss/inference
         magnitude = torch.relu(self.magnitude(h)).squeeze(-1)
-        # TP/SL as positive percentages via softplus (always > 0)
-        pred_tp = nn.functional.softplus(self.tp_head(h)).squeeze(-1)
-        pred_sl = nn.functional.softplus(self.sl_head(h)).squeeze(-1)
+
+        # TP/SL via sigmoid scaled to [min, max] range — prevents degenerate
+        # strategies where TP ≈ 0 (penny picking) or SL → ∞ (never hit)
+        tp_raw = torch.sigmoid(self.tp_head(h)).squeeze(-1)  # (0, 1)
+        sl_raw = torch.sigmoid(self.sl_head(h)).squeeze(-1)  # (0, 1)
+        pred_tp = self.MIN_TP_PCT + tp_raw * (self.MAX_TP_PCT - self.MIN_TP_PCT)
+        pred_sl = self.MIN_SL_PCT + sl_raw * (self.MAX_SL_PCT - self.MIN_SL_PCT)
+
         return direction, confidence, magnitude, pred_tp, pred_sl
 
 

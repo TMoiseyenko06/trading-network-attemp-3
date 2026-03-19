@@ -15,6 +15,7 @@ class RiskConfig:
     consecutive_loss_trigger: int = 3         # losses before cooldown activates
     max_position_size: int = 4                # max contracts
     drawdown_scale_start: float = 0.5         # start scaling at 50% of drawdown limit
+    min_rr_ratio: float = 0.8                 # minimum risk/reward ratio (TP/SL)
 
 
 @dataclass
@@ -41,12 +42,17 @@ class RiskManager:
             current_equity=starting_equity,
         )
 
-    def check_trade(self, confidence: float, predicted_direction: int) -> tuple[bool, int, str]:
+    def check_trade(
+        self, confidence: float, predicted_direction: int,
+        tp_pct: float = 0.0, sl_pct: float = 0.0,
+    ) -> tuple[bool, int, str]:
         """Decide whether a trade is allowed and compute position size.
 
         Args:
             confidence: network confidence score [0, 1]
             predicted_direction: 0=long winner, 1=short loser, 2=flat/timeout
+            tp_pct: predicted take-profit as decimal percentage
+            sl_pct: predicted stop-loss as decimal percentage
 
         Returns:
             (allowed, position_size, reason)
@@ -73,6 +79,12 @@ class RiskManager:
         # Minimum confidence filter
         if confidence < self.config.min_confidence:
             return False, 0, f"Confidence {confidence:.2f} below minimum {self.config.min_confidence}"
+
+        # Minimum risk/reward ratio — don't take trades risking more than potential gain
+        if tp_pct > 0 and sl_pct > 0:
+            rr_ratio = tp_pct / sl_pct
+            if rr_ratio < self.config.min_rr_ratio:
+                return False, 0, f"R:R {rr_ratio:.2f} below minimum {self.config.min_rr_ratio}"
 
         # Cooldown after consecutive losses
         if self.state.cooldown_remaining > 0:

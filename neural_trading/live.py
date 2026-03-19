@@ -219,6 +219,13 @@ class LiveTrader:
         sl = pred_sl.cpu().item()
         direction = int(dir_logits.argmax(dim=1).cpu().item())
 
+        # The model already enforces [MIN_TP, MAX_TP] bounds via sigmoid scaling,
+        # but apply a safety floor here too in case of checkpoint mismatch
+        from .model import DecisionHead
+        tp = max(tp, DecisionHead.MIN_TP_PCT)
+        sl = min(sl, DecisionHead.MAX_SL_PCT)
+        sl = max(sl, DecisionHead.MIN_SL_PCT)
+
         return {
             "direction": direction,
             "probs": probs,
@@ -236,8 +243,10 @@ class LiveTrader:
         labels = ["LONG", "SHORT", "FLAT"]
         last_close = self.buffer.last_close
 
-        # Check with risk manager
-        allowed, size, reason = self.risk_mgr.check_trade(conf, direction)
+        # Check with risk manager (pass TP/SL for R:R filtering)
+        allowed, size, reason = self.risk_mgr.check_trade(
+            conf, direction, signal["tp_pct"], signal["sl_pct"],
+        )
 
         self._signal_count += 1
 
@@ -253,13 +262,16 @@ class LiveTrader:
         if allowed:
             tp_price = last_close * (1 + signal["tp_pct"])
             sl_price = last_close * (1 - signal["sl_pct"])
+            tp_pts = abs(tp_price - last_close)
+            sl_pts = abs(sl_price - last_close)
+            rr = tp_pts / sl_pts if sl_pts > 0 else 0
 
             print(
                 f"  [{ts_str}] #{self._signal_count:4d} "
                 f"{dir_label:5s} x{size} @ {last_close:.2f} | "
                 f"conf={conf:.2f} ({prob_str}) | "
-                f"TP={tp_price:.2f} SL={sl_price:.2f} | "
-                f"mag={signal['magnitude']:.4f}"
+                f"TP={tp_price:.2f}(+{tp_pts:.1f}pt) SL={sl_price:.2f}(-{sl_pts:.1f}pt) "
+                f"R:R={rr:.1f} | mag={signal['magnitude']:.4f}"
             )
 
             if self.paper:
