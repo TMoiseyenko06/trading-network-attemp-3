@@ -357,6 +357,10 @@ class LiveTrader:
             for msg in live_client:
                 type_name = type(msg).__name__
 
+                # DEBUG: log every record type and its attributes
+                attrs = [a for a in dir(msg) if not a.startswith("_")]
+                print(f"  >> RECORD: {type_name} attrs={attrs}")
+
                 # Check for OHLCV by attribute presence (type name varies across versions)
                 if hasattr(msg, "open") and hasattr(msg, "high") and hasattr(msg, "close"):
                     o = msg.open * self.PRICE_SCALE
@@ -366,6 +370,7 @@ class LiveTrader:
                     v = msg.volume
 
                     ts = pd.Timestamp(msg.ts_event, unit="ns", tz="UTC")
+                    print(f"  >> BAR: {ts} O={o:.2f} H={h:.2f} L={l:.2f} C={c:.2f} V={v}")
                     self._process_bar(ts.to_pydatetime(), o, h, l, c, v)
 
                 elif hasattr(msg, "err"):
