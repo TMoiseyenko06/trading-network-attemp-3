@@ -145,6 +145,12 @@ class DecisionHead(nn.Module):
         self.tp_head = nn.Linear(hidden_dim, 1)               # take-profit pct
         self.sl_head = nn.Linear(hidden_dim, 1)               # stop-loss pct
 
+        # Small init for decision heads — prevents extreme logits on first forward
+        # pass which cause float16 overflow with AMP and saturate sigmoid/softmax
+        for head in [self.direction, self.confidence, self.magnitude, self.tp_head, self.sl_head]:
+            nn.init.xavier_uniform_(head.weight, gain=0.1)
+            nn.init.zeros_(head.bias)
+
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         # x: (batch, seq_len, hidden_dim) — take last timestep
         h = self.shared(x[:, -1, :])

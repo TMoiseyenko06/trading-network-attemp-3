@@ -27,8 +27,8 @@ class TradingLoss(nn.Module):
         confidence_weight: float = 0.2,
         tp_sl_weight: float = 0.3,
         pnl_weight: float = 1.5,
-        selectivity_weight: float = 8.0,
-        low_conviction_weight: float = 1.5,
+        selectivity_weight: float = 5.0,
+        low_conviction_weight: float = 0.0,  # disabled — risk manager handles filtering
         conf_threshold: float = 0.7,
         class_weights: torch.Tensor | None = None,
     ):
