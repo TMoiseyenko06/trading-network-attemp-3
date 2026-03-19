@@ -16,10 +16,40 @@ from neural_trading.preprocessing import compute_features, add_time_features, bu
 
 
 def load_ohlcv(path: str) -> pd.DataFrame:
-    """Load OHLCV data from CSV.
+    """Load OHLCV data from .dbn (Databento) or .csv files.
 
-    Expected columns: datetime (or date), open, high, low, close, volume
+    For .dbn: uses databento library, expects ohlcv-* schema.
+    For .csv: expects columns datetime index + open, high, low, close, volume.
     """
+    path = Path(path)
+
+    if path.suffix == ".dbn":
+        import databento as db
+
+        store = db.DBNStore.from_file(path)
+        df = store.to_df()
+        df.columns = [c.strip().lower() for c in df.columns]
+
+        # Databento OHLCV prices are in fixed-point (int64 with 1e-9 scale)
+        # to_df() already converts them to float, but verify we have the right cols
+        required = {"open", "high", "low", "close", "volume"}
+        available = set(df.columns)
+        missing = required - available
+        if missing:
+            raise ValueError(
+                f"Missing columns in .dbn file: {missing}. "
+                f"Available: {sorted(available)}. "
+                f"Make sure the file uses an ohlcv-* schema."
+            )
+
+        # Keep only OHLCV columns, drop extras like symbol, rtype, publisher_id
+        df = df[["open", "high", "low", "close", "volume"]]
+
+        # Index is already ts_event (DatetimeIndex) from to_df()
+        df = df.sort_index()
+        return df
+
+    # Fallback: CSV
     df = pd.read_csv(path, parse_dates=True, index_col=0)
     df.columns = [c.strip().lower() for c in df.columns]
     required = {"open", "high", "low", "close", "volume"}
@@ -129,10 +159,10 @@ def main():
     sub = parser.add_subparsers(dest="command")
 
     train_p = sub.add_parser("train", help="Walk-forward train the model")
-    train_p.add_argument("--data", required=True, help="Path to OHLCV CSV")
+    train_p.add_argument("--data", required=True, help="Path to OHLCV data (.dbn or .csv)")
 
     infer_p = sub.add_parser("infer", help="Run inference on new data")
-    infer_p.add_argument("--data", required=True, help="Path to OHLCV CSV")
+    infer_p.add_argument("--data", required=True, help="Path to OHLCV data (.dbn or .csv)")
     infer_p.add_argument("--model", required=True, help="Path to saved model checkpoint")
 
     args = parser.parse_args()
