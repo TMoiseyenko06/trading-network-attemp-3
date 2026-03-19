@@ -59,7 +59,8 @@ class TradingLoss(nn.Module):
         sortino = -(pnl.mean() / downside_std)  # negative because we minimize
 
         # 4. Confidence calibration
-        conf_loss = F.binary_cross_entropy(confidence, correct)
+        with torch.amp.autocast("cuda", enabled=False):
+            conf_loss = F.binary_cross_entropy(confidence.float(), correct.float())
 
         # 5. TP/SL regression (Huber for robustness to outliers)
         tp_loss = F.huber_loss(pred_tp, true_tp, delta=0.01)
