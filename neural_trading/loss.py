@@ -83,14 +83,11 @@ class TradingLoss(nn.Module):
         tp_sl_loss = tp_loss + sl_loss
 
         # 6. Direct P&L maximization — the core profit objective
-        #    Expected PnL = P(correct) * TP - P(wrong) * SL
-        #    Full gradient flows through both direction AND TP/SL predictions.
-        #    The model learns to jointly optimize: pick good entries AND size TP/SL well.
-        #
-        #    We weight by trade probability (1 - P(flat)) so the model is incentivized
-        #    to actually take trades, not hide in FLAT to avoid losses.
+        #    Uses TRUE TP/SL so the model can't game profit by inflating predicted TP.
+        #    Gradient flows through direction only (not TP/SL sizing).
+        #    TP/SL learning happens via the Huber loss (#5) instead.
         p_trade = 1.0 - probs[:, 2]  # probability of NOT predicting flat
-        expected_pnl = soft_correct * pred_tp.float() - (1.0 - soft_correct) * pred_sl.float()
+        expected_pnl = soft_correct * true_tp.float() - (1.0 - soft_correct) * true_sl.float()
         # Scale by trade probability: no reward for being right if you don't trade
         weighted_pnl = expected_pnl * p_trade
         pnl_loss = -weighted_pnl.mean()  # negative because we maximize profit
