@@ -311,10 +311,169 @@ class WalkForwardTrainer:
             {"model_state": best_state, "hidden_dim": self.hidden_dim,
              "input_dim": input_dim, "test_metrics": test_m,
              "feat_mean": self._feat_mean.to_dict(),
-             "feat_std": self._feat_std.to_dict()},
+             "feat_std": self._feat_std.to_dict(),
+             # Resume support
+             "optimizer_state": optimizer.state_dict(),
+             "scheduler_state": scheduler.state_dict(),
+             "scaler_state": scaler.state_dict() if scaler is not None else None,
+             "epoch": epoch,
+             "best_val_loss": best_val_loss,
+             "lr": self.lr,
+             "epochs_per_fold": self.epochs_per_fold,
+             },
             "model.pt",
         )
         print("  Saved model.pt")
+
+        return {
+            "test_accuracy": test_m["accuracy"],
+            "test_sortino": test_m["sortino"],
+            "best_val_loss": best_val_loss,
+        }
+
+    def resume_training(
+        self,
+        df: pd.DataFrame,
+        checkpoint_path: str = "model.pt",
+        extra_epochs: int = 30,
+        train_pct: float = 0.8,
+        val_pct: float = 0.1,
+    ) -> dict:
+        """Resume training from a saved checkpoint.
+
+        Args:
+            df: Raw OHLCV dataframe with DatetimeIndex
+            checkpoint_path: Path to the saved model.pt checkpoint
+            extra_epochs: Number of additional epochs to train
+            train_pct: fraction of data for training (default 80%)
+            val_pct: fraction of training data used for validation / early stopping
+        """
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        prev_epoch = checkpoint.get("epoch", 0)
+        prev_best_val = checkpoint.get("best_val_loss", float("inf"))
+
+        print(f"  Resuming from epoch {prev_epoch + 1}, best_val_loss={prev_best_val:.4f}")
+        print(f"  Training {extra_epochs} additional epochs")
+
+        X_all, y_cls_all, y_mag_all, y_tp_all, y_sl_all = self._prepare_data(df)
+        input_dim = X_all.shape[2]
+        total = len(X_all)
+
+        split = int(total * train_pct)
+        val_size = int(split * val_pct)
+        train_end = split - val_size
+
+        # Class weights
+        train_labels = y_cls_all[:train_end]
+        counts = np.bincount(train_labels.astype(int), minlength=3).astype(np.float32)
+        counts = np.maximum(counts, 1.0)
+        class_weights = (1.0 / counts) * counts.sum() / len(counts)
+        class_weights_t = torch.from_numpy(class_weights).to(self.device)
+
+        print(f"\n{'='*60}")
+        print(f"RESUME TRAINING")
+        print(f"Train[0:{train_end}] Val[{train_end}:{split}] Backtest[{split}:{total}]")
+        print(f"  {train_end} train / {val_size} val / {total - split} backtest bars")
+        print(f"{'='*60}")
+
+        train_loader = self._make_loader(
+            X_all[:train_end], y_cls_all[:train_end], y_mag_all[:train_end],
+            y_tp_all[:train_end], y_sl_all[:train_end],
+        )
+        val_loader = self._make_loader(
+            X_all[train_end:split], y_cls_all[train_end:split], y_mag_all[train_end:split],
+            y_tp_all[train_end:split], y_sl_all[train_end:split],
+            shuffle=False,
+        )
+        test_loader = self._make_loader(
+            X_all[split:], y_cls_all[split:], y_mag_all[split:],
+            y_tp_all[split:], y_sl_all[split:],
+            shuffle=False,
+        )
+
+        # Rebuild model and load weights
+        model = self._build_model(input_dim)
+        state = checkpoint["model_state"]
+        state = {k.removeprefix("_orig_mod."): v for k, v in state.items()}
+        model.load_state_dict(state)
+
+        # Rebuild optimizer and load state
+        optimizer = torch.optim.AdamW(model.parameters(), lr=self.lr, weight_decay=1e-4)
+        if "optimizer_state" in checkpoint and checkpoint["optimizer_state"] is not None:
+            optimizer.load_state_dict(checkpoint["optimizer_state"])
+
+        # Fresh cosine schedule for the extra epochs
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=extra_epochs,
+        )
+
+        criterion = TradingLoss(class_weights=class_weights_t)
+        scaler = torch.amp.GradScaler("cuda") if self.gpu.use_amp else None
+        if scaler is not None and checkpoint.get("scaler_state") is not None:
+            scaler.load_state_dict(checkpoint["scaler_state"])
+
+        best_val_loss = prev_best_val
+        patience_counter = 0
+        best_state = {k.removeprefix("_orig_mod."): v.cpu().clone()
+                      for k, v in model.state_dict().items()}
+
+        start_epoch = prev_epoch + 1
+        for epoch in range(start_epoch, start_epoch + extra_epochs):
+            t0 = time.time()
+            train_m = self._train_epoch(model, train_loader, optimizer, criterion, scaler)
+            val_m = self._eval_epoch(model, val_loader, criterion)
+            scheduler.step()
+            elapsed = time.time() - t0
+
+            val_loss = val_m["cls_loss"]
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                patience_counter = 0
+                best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            else:
+                patience_counter += 1
+
+            gnorm = train_m.get("grad_norm", 0)
+            rr = val_m.get("rr_ratio", 0)
+            pnl = val_m.get("pnl", 0)
+            flat = val_m.get("flat_rate", 0)
+            print(
+                f"  Epoch {epoch:3d} | "
+                f"train_acc={train_m['accuracy']:.3f} val_acc={val_m['accuracy']:.3f} | "
+                f"loss={val_m['cls_loss']:.4f} pnl={pnl:.5f} sortino={val_m['sortino']:.3f} "
+                f"R:R={rr:.2f} flat={flat:.0%} | "
+                f"gnorm={gnorm:.4f} | {elapsed:.1f}s"
+            )
+
+            if patience_counter >= self.patience:
+                print(f"  Early stopping at epoch {epoch}")
+                break
+
+        # Load best model and backtest
+        if best_state is not None:
+            model.load_state_dict(best_state)
+        test_m = self._eval_epoch(model, test_loader, criterion)
+        test_pnl = test_m.get("pnl", 0)
+        test_flat = test_m.get("flat_rate", 0)
+        print(f"\n  BACKTEST | acc={test_m['accuracy']:.3f} pnl={test_pnl:.5f} "
+              f"sortino={test_m['sortino']:.3f} flat={test_flat:.0%}")
+
+        torch.save(
+            {"model_state": best_state, "hidden_dim": self.hidden_dim,
+             "input_dim": input_dim, "test_metrics": test_m,
+             "feat_mean": self._feat_mean.to_dict(),
+             "feat_std": self._feat_std.to_dict(),
+             "optimizer_state": optimizer.state_dict(),
+             "scheduler_state": scheduler.state_dict(),
+             "scaler_state": scaler.state_dict() if scaler is not None else None,
+             "epoch": epoch,
+             "best_val_loss": best_val_loss,
+             "lr": self.lr,
+             "epochs_per_fold": extra_epochs,
+             },
+            checkpoint_path,
+        )
+        print(f"  Saved {checkpoint_path}")
 
         return {
             "test_accuracy": test_m["accuracy"],

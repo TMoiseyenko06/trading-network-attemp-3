@@ -82,11 +82,18 @@ def train(args: argparse.Namespace) -> None:
         lookback=config.lookback,
         max_bars=config.max_bars,
         lr=config.lr,
-        epochs_per_fold=config.epochs_per_fold,
+        epochs_per_fold=args.extra_epochs if args.resume else config.epochs_per_fold,
         patience=config.patience,
     )
 
-    result = trainer.train_backtest(df)
+    if args.resume:
+        result = trainer.resume_training(
+            df,
+            checkpoint_path=args.resume,
+            extra_epochs=args.extra_epochs,
+        )
+    else:
+        result = trainer.train_backtest(df)
 
     print("\n" + "=" * 60)
     print("RESULTS")
@@ -210,6 +217,8 @@ def main():
 
     train_p = sub.add_parser("train", help="Walk-forward train the model")
     train_p.add_argument("--data", required=True, help="Path to OHLCV data (.dbn or .csv)")
+    train_p.add_argument("--resume", default=None, help="Path to checkpoint to resume from (e.g. model.pt)")
+    train_p.add_argument("--extra-epochs", type=int, default=30, help="Additional epochs when resuming (default: 30)")
 
     infer_p = sub.add_parser("infer", help="Run inference on new data")
     infer_p.add_argument("--data", required=True, help="Path to OHLCV data (.dbn or .csv)")
