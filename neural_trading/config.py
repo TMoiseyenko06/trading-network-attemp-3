@@ -21,8 +21,8 @@ class Config:
     test_months: int = 1
 
     # Risk (prop firm survival)
-    daily_loss_limit: float = -500.0
-    trailing_drawdown_limit: float = -2000.0
+    daily_loss_limit: float = -1250.0
+    trailing_drawdown_limit: float = -2250.0
     min_confidence: float = 0.6
     cooldown_bars: int = 5
     consecutive_loss_trigger: int = 3
