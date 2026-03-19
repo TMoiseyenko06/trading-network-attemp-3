@@ -54,14 +54,16 @@ class TradingLoss(nn.Module):
 
         # 3. Differentiable Sortino-inspired component
         # Use soft probabilities instead of argmax to maintain gradient flow
-        probs = F.softmax(direction_logits, dim=1)  # (B, 3)
+        # Compute in float32 to avoid AMP float16 underflow
+        probs = F.softmax(direction_logits.float(), dim=1)  # (B, 3)
         true_onehot = F.one_hot(true_labels, num_classes=direction_logits.shape[1]).float()
         # Soft correctness = probability assigned to the true class
         soft_correct = (probs * true_onehot).sum(dim=1)  # (B,) in [0, 1]
         # Soft PnL: high prob on correct class -> positive, low -> negative
-        soft_pnl = (2.0 * soft_correct - 1.0) * true_magnitude  # range [-mag, +mag]
+        soft_pnl = (2.0 * soft_correct - 1.0) * true_magnitude.float()
         downside = torch.clamp(soft_pnl, max=0)
-        downside_std = downside.std() + 1e-8
+        downside_var = (downside ** 2).mean()
+        downside_std = torch.sqrt(downside_var + 1e-6)
         sortino = -(soft_pnl.mean() / downside_std)
 
         # 4. Confidence calibration (soft correctness as target)
