@@ -207,10 +207,10 @@ def build_sequences(
     # sliding_window_view gives (N, features, lookback) — transpose to (N, lookback, features)
     X = np.moveaxis(X, -1, 1).copy()
 
-    y_class = lab[lookback:].copy()
-    y_mag = mag[lookback:].copy()
-    y_tp = tp[lookback:].copy()
-    y_sl = sl[lookback:].copy()
+    y_class = lab[lookback - 1:].copy()
+    y_mag = mag[lookback - 1:].copy()
+    y_tp = tp[lookback - 1:].copy()
+    y_sl = sl[lookback - 1:].copy()
 
     # Drop any rows with NaN in features
     valid = ~np.isnan(X.reshape(X.shape[0], -1)).any(axis=1)
