@@ -56,6 +56,24 @@ class WalkForwardTrainer:
         labels = labels.loc[valid_start:]
         features = features.fillna(0)
 
+        # Standardize features (zero mean, unit variance) so the network
+        # receives reasonably-scaled inputs instead of tiny pct-change values
+        self._feat_mean = features.mean()
+        self._feat_std = features.std().replace(0, 1)
+        features = (features - self._feat_mean) / self._feat_std
+
+        # Diagnostics
+        print(f"\n  Features ({features.shape[1]}): {list(features.columns)}")
+        print(f"  Feature ranges after standardization:")
+        for col in features.columns:
+            vals = features[col].values
+            print(f"    {col:15s}: mean={vals.mean():.4f} std={vals.std():.4f} "
+                  f"min={vals.min():.4f} max={vals.max():.4f}")
+
+        lbl_counts = np.bincount(labels["label"].values.astype(int), minlength=3)
+        print(f"\n  Label distribution: 0(win)={lbl_counts[0]} 1(lose)={lbl_counts[1]} 2(flat)={lbl_counts[2]}")
+        print(f"  Magnitude: mean={labels['magnitude'].mean():.6f} std={labels['magnitude'].std():.6f}")
+
         return build_sequences(features, labels, self.lookback)
 
     def _make_loader(
@@ -73,9 +91,8 @@ class WalkForwardTrainer:
             dataset,
             batch_size=self.gpu.batch_size,
             shuffle=shuffle,
-            num_workers=self.gpu.num_workers,
+            num_workers=0,  # avoid fork() issues with CUDA
             pin_memory=self.gpu.pin_memory,
-            persistent_workers=self.gpu.num_workers > 0,
         )
 
     def _build_model(self, input_dim: int) -> NeuralOHLCVNet:
@@ -88,8 +105,9 @@ class WalkForwardTrainer:
             num_classes=3,
         ).to(self.device)
 
-        if self.gpu.use_compile:
-            model = torch.compile(model)
+        # Skip torch.compile for now — can mask gradient issues
+        # if self.gpu.use_compile:
+        #     model = torch.compile(model)
 
         return model
 
@@ -121,16 +139,20 @@ class WalkForwardTrainer:
                 scaler.scale(loss).backward()
                 if (step + 1) % self.gpu.gradient_accumulation_steps == 0:
                     scaler.unscale_(optimizer)
-                    nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+                    grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 5.0)
                     scaler.step(optimizer)
                     scaler.update()
                     optimizer.zero_grad(set_to_none=True)
             else:
                 loss.backward()
                 if (step + 1) % self.gpu.gradient_accumulation_steps == 0:
-                    nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+                    grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 5.0)
                     optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
+
+            # Log gradient norm on first batch of each epoch
+            if step == 0:
+                total_metrics["grad_norm"] = grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm
 
             for k, v in metrics.items():
                 total_metrics[k] = total_metrics.get(k, 0) + v
@@ -247,10 +269,12 @@ class WalkForwardTrainer:
             else:
                 patience_counter += 1
 
+            gnorm = train_m.get("grad_norm", 0)
             print(
                 f"  Epoch {epoch:3d} | "
                 f"train_acc={train_m['accuracy']:.3f} val_acc={val_m['accuracy']:.3f} | "
-                f"sortino={val_m['sortino']:.3f} | {elapsed:.1f}s"
+                f"loss={val_m['cls_loss']:.4f} sortino={val_m['sortino']:.3f} | "
+                f"gnorm={gnorm:.4f} | {elapsed:.1f}s"
             )
 
             if patience_counter >= self.patience:
