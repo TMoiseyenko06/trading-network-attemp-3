@@ -96,8 +96,12 @@ class ContextMemory(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Self-attention with residual (causal — no future leakage)
+        seq_len = x.size(1)
+        mask = nn.Transformer.generate_square_subsequent_mask(
+            seq_len, device=x.device,
+        )
         normed = self.norm1(x)
-        attn_out, _ = self.attn(normed, normed, normed, is_causal=True)
+        attn_out, _ = self.attn(normed, normed, normed, attn_mask=mask, is_causal=True)
         x = x + self.dropout(attn_out)
 
         # LSTM with residual
