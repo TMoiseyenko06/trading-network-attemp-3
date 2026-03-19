@@ -145,6 +145,8 @@ class WalkForwardTrainer:
         model.train()
         total_metrics: dict[str, float] = {}
         n_batches = 0
+        skipped_steps = 0
+        total_opt_steps = 0
 
         for step, (X, y_cls, y_mag, y_tp, y_sl) in enumerate(loader):
             # Data already on GPU from _make_loader
@@ -158,8 +160,14 @@ class WalkForwardTrainer:
                 if (step + 1) % self.gpu.gradient_accumulation_steps == 0:
                     scaler.unscale_(optimizer)
                     grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+                    # Track whether scaler skips this step (inf/nan gradients)
+                    old_scale = scaler.get_scale()
                     scaler.step(optimizer)
                     scaler.update()
+                    new_scale = scaler.get_scale()
+                    total_opt_steps += 1
+                    if new_scale < old_scale:
+                        skipped_steps += 1
                     optimizer.zero_grad(set_to_none=True)
             else:
                 loss.backward()
@@ -167,6 +175,7 @@ class WalkForwardTrainer:
                     grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 5.0)
                     optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
+                    total_opt_steps += 1
 
             # Log gradient norm on first batch of each epoch
             if step == 0:
@@ -176,7 +185,10 @@ class WalkForwardTrainer:
                 total_metrics[k] = total_metrics.get(k, 0) + v
             n_batches += 1
 
-        return {k: v / n_batches for k, v in total_metrics.items()}
+        avg_metrics = {k: v / n_batches for k, v in total_metrics.items()}
+        avg_metrics["skipped_steps"] = skipped_steps
+        avg_metrics["total_opt_steps"] = total_opt_steps
+        return avg_metrics
 
     @torch.no_grad()
     def _eval_epoch(
@@ -261,7 +273,10 @@ class WalkForwardTrainer:
             optimizer, T_max=self.epochs_per_fold,
         )
         criterion = TradingLoss(class_weights=class_weights_t)
-        scaler = torch.amp.GradScaler("cuda") if self.gpu.use_amp else None
+        # Conservative initial scale — default 65536 causes scaled_loss to overflow
+        # float16 max (65504) when loss > 1.0, producing inf gradients that make
+        # scaler.step() skip EVERY optimizer step → model never learns.
+        scaler = torch.amp.GradScaler("cuda", init_scale=256) if self.gpu.use_amp else None
 
         best_val_loss = float("inf")
         patience_counter = 0
@@ -288,12 +303,15 @@ class WalkForwardTrainer:
             flat = val_m.get("flat_rate", 0)
             trade_acc = val_m.get("trade_acc", 0)
             avg_conf = val_m.get("avg_trade_conf", 0)
+            skipped = int(train_m.get("skipped_steps", 0))
+            total_steps = int(train_m.get("total_opt_steps", 0))
+            skip_info = f" SKIPPED {skipped}/{total_steps}" if skipped > 0 else ""
             print(
                 f"  Epoch {epoch:3d} | "
                 f"val_acc={val_m['accuracy']:.3f} trade_acc={trade_acc:.3f} | "
                 f"loss={val_m['cls_loss']:.4f} pnl={pnl:.5f} sortino={val_m['sortino']:.3f} "
                 f"R:R={rr:.2f} flat={flat:.0%} conf={avg_conf:.2f} | "
-                f"gnorm={gnorm:.4f} | {elapsed:.1f}s"
+                f"gnorm={gnorm:.4f}{skip_info} | {elapsed:.1f}s"
             )
 
             if patience_counter >= self.patience:
@@ -411,7 +429,7 @@ class WalkForwardTrainer:
         )
 
         criterion = TradingLoss(class_weights=class_weights_t)
-        scaler = torch.amp.GradScaler("cuda") if self.gpu.use_amp else None
+        scaler = torch.amp.GradScaler("cuda", init_scale=256) if self.gpu.use_amp else None
         if scaler is not None and checkpoint.get("scaler_state") is not None:
             scaler.load_state_dict(checkpoint["scaler_state"])
 
@@ -442,12 +460,15 @@ class WalkForwardTrainer:
             flat = val_m.get("flat_rate", 0)
             trade_acc = val_m.get("trade_acc", 0)
             avg_conf = val_m.get("avg_trade_conf", 0)
+            skipped = int(train_m.get("skipped_steps", 0))
+            total_steps = int(train_m.get("total_opt_steps", 0))
+            skip_info = f" SKIPPED {skipped}/{total_steps}" if skipped > 0 else ""
             print(
                 f"  Epoch {epoch:3d} | "
                 f"val_acc={val_m['accuracy']:.3f} trade_acc={trade_acc:.3f} | "
                 f"loss={val_m['cls_loss']:.4f} pnl={pnl:.5f} sortino={val_m['sortino']:.3f} "
                 f"R:R={rr:.2f} flat={flat:.0%} conf={avg_conf:.2f} | "
-                f"gnorm={gnorm:.4f} | {elapsed:.1f}s"
+                f"gnorm={gnorm:.4f}{skip_info} | {elapsed:.1f}s"
             )
 
             if patience_counter >= self.patience:
