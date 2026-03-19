@@ -352,7 +352,6 @@ class LiveTrader:
 
         print("  Connecting to Databento live feed...")
         try:
-            live_client.start()
             print("  Connected! Waiting for bars...\n")
 
             for msg in live_client:
