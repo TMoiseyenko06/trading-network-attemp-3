@@ -121,14 +121,14 @@ class WalkForwardTrainer:
                 scaler.scale(loss).backward()
                 if (step + 1) % self.gpu.gradient_accumulation_steps == 0:
                     scaler.unscale_(optimizer)
-                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    nn.utils.clip_grad_norm_(model.parameters(), 5.0)
                     scaler.step(optimizer)
                     scaler.update()
                     optimizer.zero_grad(set_to_none=True)
             else:
                 loss.backward()
                 if (step + 1) % self.gpu.gradient_accumulation_steps == 0:
-                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    nn.utils.clip_grad_norm_(model.parameters(), 5.0)
                     optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
 
@@ -190,6 +190,16 @@ class WalkForwardTrainer:
         val_size = int(split * val_pct)
         train_end = split - val_size
 
+        # Compute class weights from training labels to handle imbalance
+        train_labels = y_cls_all[:train_end]
+        counts = np.bincount(train_labels.astype(int), minlength=3).astype(np.float32)
+        print(f"\n  Label distribution (train): {dict(enumerate(counts.astype(int)))}")
+        # Inverse frequency weighting
+        counts = np.maximum(counts, 1.0)  # avoid div by zero
+        class_weights = (1.0 / counts) * counts.sum() / len(counts)
+        class_weights_t = torch.from_numpy(class_weights).to(self.device)
+        print(f"  Class weights: {class_weights}")
+
         print(f"\n{'='*60}")
         print(f"Train[0:{train_end}] Val[{train_end}:{split}] Backtest[{split}:{total}]")
         print(f"  {train_end} train / {val_size} val / {total - split} backtest bars")
@@ -215,7 +225,7 @@ class WalkForwardTrainer:
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=self.epochs_per_fold,
         )
-        criterion = TradingLoss()
+        criterion = TradingLoss(class_weights=class_weights_t)
         scaler = torch.amp.GradScaler("cuda") if self.gpu.use_amp else None
 
         best_val_loss = float("inf")
