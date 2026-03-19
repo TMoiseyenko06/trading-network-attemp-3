@@ -107,7 +107,10 @@ def infer(args: argparse.Namespace) -> None:
         input_dim=input_dim,
         hidden_dim=hidden_dim,
     ).to(gpu.device)
-    model.load_state_dict(checkpoint["model_state"])
+    # Strip _orig_mod. prefix added by torch.compile()
+    state = checkpoint["model_state"]
+    state = {k.removeprefix("_orig_mod."): v for k, v in state.items()}
+    model.load_state_dict(state)
     model.eval()
 
     risk_mgr = RiskManager(

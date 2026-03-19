@@ -134,7 +134,11 @@ class LiveTrader:
             input_dim=self.input_dim,
             hidden_dim=self.hidden_dim,
         ).to(self.gpu.device)
-        self.model.load_state_dict(checkpoint["model_state"])
+
+        # Strip _orig_mod. prefix added by torch.compile()
+        state = checkpoint["model_state"]
+        state = {k.removeprefix("_orig_mod."): v for k, v in state.items()}
+        self.model.load_state_dict(state)
         self.model.eval()
 
         # Load normalization stats
