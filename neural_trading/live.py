@@ -6,7 +6,6 @@ import time
 import threading
 from collections import deque
 from datetime import datetime, timezone
-from functools import singledispatch
 from typing import Optional
 
 import numpy as np
@@ -351,35 +350,28 @@ class LiveTrader:
             symbols=self.symbols,
         )
 
-        @singledispatch
-        def handler(_: db.DBNRecord):
-            pass
+        def handler(msg):
+            if isinstance(msg, db.OHLCVMsg):
+                # Databento prices are fixed-point int64 scaled by 1e-9
+                o = msg.open * self.PRICE_SCALE
+                h = msg.high * self.PRICE_SCALE
+                l = msg.low * self.PRICE_SCALE
+                c = msg.close * self.PRICE_SCALE
+                v = msg.volume
 
-        @handler.register
-        def _(msg: db.OHLCVMsg):
-            # Databento prices are fixed-point int64 scaled by 1e-9
-            o = msg.open * self.PRICE_SCALE
-            h = msg.high * self.PRICE_SCALE
-            l = msg.low * self.PRICE_SCALE
-            c = msg.close * self.PRICE_SCALE
-            v = msg.volume
+                # ts_event is nanosecond unix timestamp
+                ts = pd.Timestamp(msg.ts_event, unit="ns", tz="UTC")
 
-            # ts_event is nanosecond unix timestamp
-            ts = pd.Timestamp(msg.ts_event, unit="ns", tz="UTC")
-
-            self._process_bar(ts.to_pydatetime(), o, h, l, c, v)
-
-        @handler.register
-        def _(msg: db.ErrorMsg):
-            print(f"\n  DATABENTO ERROR: {msg.err}")
-
-        @handler.register
-        def _(msg: db.SystemMsg):
-            print(f"  DATABENTO SYSTEM: {msg.msg}")
-
-        @handler.register
-        def _(msg: db.SymbolMappingMsg):
-            print(f"  Symbol mapping: {msg.stype_in_symbol} -> instrument {msg.instrument_id}")
+                self._process_bar(ts.to_pydatetime(), o, h, l, c, v)
+            elif isinstance(msg, db.ErrorMsg):
+                print(f"\n  DATABENTO ERROR: {msg.err}")
+            elif isinstance(msg, db.SystemMsg):
+                print(f"  DATABENTO SYSTEM: {msg.msg}")
+            elif isinstance(msg, db.SymbolMappingMsg):
+                print(f"  Symbol mapping: {msg.stype_in_symbol} -> instrument {msg.instrument_id}")
+            else:
+                # Debug: log unknown record types
+                print(f"  DEBUG: Unhandled record type: {type(msg).__name__}")
 
         live_client.add_callback(handler)
 
