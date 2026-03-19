@@ -27,7 +27,7 @@ class TradingLoss(nn.Module):
         confidence_weight: float = 0.2,
         tp_sl_weight: float = 0.3,
         pnl_weight: float = 1.5,
-        selectivity_weight: float = 25.0,
+        selectivity_weight: float = 15.0,
         low_conviction_weight: float = 3.0,
         conf_threshold: float = 0.7,
         class_weights: torch.Tensor | None = None,
@@ -94,8 +94,9 @@ class TradingLoss(nn.Module):
         p_flat = probs[:, 2]            # (B,) per-sample flat probability
         p_trade = 1.0 - p_flat          # how much the model wants to trade this bar
         conf_sig = torch.sigmoid(confidence).float()
-        # Sharp gate: steepness=20 makes this ~0 below threshold, ~1 above
-        conf_gate = torch.sigmoid(20.0 * (conf_sig - self.conf_threshold))
+        # Sharp gate: steepness=10 makes this ~0.12 at conf=0.5, ~1 above 0.85
+        # (softer than 20 so the model can earn PnL reward during early training)
+        conf_gate = torch.sigmoid(10.0 * (conf_sig - self.conf_threshold))
         expected_pnl = soft_correct * true_tp.float() - (1.0 - soft_correct) * true_sl.float()
         # Double-gated: must predict trade AND be highly confident to get reward
         gated_pnl = expected_pnl * p_trade * conf_gate
