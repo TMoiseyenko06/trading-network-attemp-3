@@ -350,36 +350,34 @@ class LiveTrader:
             symbols=self.symbols,
         )
 
-        def handler(msg):
-            if isinstance(msg, db.OHLCVMsg):
-                # Databento prices are fixed-point int64 scaled by 1e-9
-                o = msg.open * self.PRICE_SCALE
-                h = msg.high * self.PRICE_SCALE
-                l = msg.low * self.PRICE_SCALE
-                c = msg.close * self.PRICE_SCALE
-                v = msg.volume
-
-                # ts_event is nanosecond unix timestamp
-                ts = pd.Timestamp(msg.ts_event, unit="ns", tz="UTC")
-
-                self._process_bar(ts.to_pydatetime(), o, h, l, c, v)
-            elif isinstance(msg, db.ErrorMsg):
-                print(f"\n  DATABENTO ERROR: {msg.err}")
-            elif isinstance(msg, db.SystemMsg):
-                print(f"  DATABENTO SYSTEM: {msg.msg}")
-            elif isinstance(msg, db.SymbolMappingMsg):
-                print(f"  Symbol mapping: {msg.stype_in_symbol} -> instrument {msg.instrument_id}")
-            else:
-                # Debug: log unknown record types
-                print(f"  DEBUG: Unhandled record type: {type(msg).__name__}")
-
-        live_client.add_callback(handler)
-
         print("  Connecting to Databento live feed...")
         try:
             live_client.start()
             print("  Connected! Waiting for bars...\n")
-            live_client.block_for_close()
+
+            for msg in live_client:
+                type_name = type(msg).__name__
+
+                # Check for OHLCV by attribute presence (type name varies across versions)
+                if hasattr(msg, "open") and hasattr(msg, "high") and hasattr(msg, "close"):
+                    o = msg.open * self.PRICE_SCALE
+                    h = msg.high * self.PRICE_SCALE
+                    l = msg.low * self.PRICE_SCALE
+                    c = msg.close * self.PRICE_SCALE
+                    v = msg.volume
+
+                    ts = pd.Timestamp(msg.ts_event, unit="ns", tz="UTC")
+                    self._process_bar(ts.to_pydatetime(), o, h, l, c, v)
+
+                elif hasattr(msg, "err"):
+                    print(f"\n  DATABENTO ERROR: {msg.err}")
+                elif hasattr(msg, "stype_in_symbol"):
+                    print(f"  Symbol mapping: {msg.stype_in_symbol} -> instrument {msg.instrument_id}")
+                elif hasattr(msg, "msg"):
+                    print(f"  DATABENTO SYSTEM: {msg.msg}")
+                else:
+                    print(f"  DEBUG: {type_name}: {msg}")
+
         except KeyboardInterrupt:
             print("\n\n  Shutting down...")
         finally:
