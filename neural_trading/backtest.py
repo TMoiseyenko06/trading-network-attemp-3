@@ -276,6 +276,8 @@ class Backtester:
         current_trade_exit_bar = 0
         current_day = None
         skipped = {"flat": 0, "low_conf": 0, "risk": 0}
+        # Diagnostic: sample TP/SL/RR from first 1000 non-flat predictions
+        _diag_rrs = []
 
         for i in range(test_start, total_bars - 1):
             # Reset daily stats at day boundaries
@@ -319,6 +321,10 @@ class Backtester:
                 skipped["flat"] += 1
                 continue
 
+            # Diagnostic: capture R:R distribution
+            if len(_diag_rrs) < 1000 and sl_pct > 0:
+                _diag_rrs.append((tp_pct, sl_pct, tp_pct / sl_pct, confidence))
+
             # Risk check
             allowed, size, reason = self.risk_mgr.check_trade(
                 confidence, direction_idx, tp_pct, sl_pct,
@@ -359,6 +365,20 @@ class Backtester:
         equity_curve = pd.Series(equity_series).sort_index()
 
         print(f"  Signals skipped: flat={skipped['flat']} low_conf={skipped['low_conf']} risk={skipped['risk']}")
+
+        # Print TP/SL diagnostic
+        if _diag_rrs:
+            import statistics
+            tps = [x[0] for x in _diag_rrs]
+            sls = [x[1] for x in _diag_rrs]
+            rrs = [x[2] for x in _diag_rrs]
+            confs = [x[3] for x in _diag_rrs]
+            print(f"\n  TP/SL Diagnostic (first {len(_diag_rrs)} non-flat signals):")
+            print(f"    TP  — min={min(tps):.6f} median={statistics.median(tps):.6f} max={max(tps):.6f}")
+            print(f"    SL  — min={min(sls):.6f} median={statistics.median(sls):.6f} max={max(sls):.6f}")
+            print(f"    R:R — min={min(rrs):.4f} median={statistics.median(rrs):.4f} max={max(rrs):.4f}")
+            print(f"    Conf— min={min(confs):.4f} median={statistics.median(confs):.4f} max={max(confs):.4f}")
+            print(f"    R:R >= 1.5: {sum(1 for r in rrs if r >= 1.5)}/{len(rrs)} ({100*sum(1 for r in rrs if r >= 1.5)/len(rrs):.1f}%)")
 
         result = self._compute_stats(trades, equity_curve, equity)
         self._print_report(result)
