@@ -171,20 +171,24 @@ def backtest(args: argparse.Namespace) -> None:
     """Run realistic backtest with P&L simulation and equity curve."""
     config = Config()
 
+    risk_cfg = RiskConfig(
+        daily_loss_limit=config.daily_loss_limit,
+        trailing_drawdown_limit=config.trailing_drawdown_limit,
+        min_confidence=config.min_confidence,
+        cooldown_bars=config.cooldown_bars,
+        consecutive_loss_trigger=config.consecutive_loss_trigger,
+        max_position_size=config.max_position_size,
+    )
+    if args.min_rr is not None:
+        risk_cfg.min_rr_ratio = args.min_rr
+
     bt = Backtester(
         model_path=args.model,
         point_value=args.point_value,
         starting_equity=args.equity,
         commission_per_contract=args.commission,
         max_bars_in_trade=config.max_bars,
-        risk_config=RiskConfig(
-            daily_loss_limit=config.daily_loss_limit,
-            trailing_drawdown_limit=config.trailing_drawdown_limit,
-            min_confidence=config.min_confidence,
-            cooldown_bars=config.cooldown_bars,
-            consecutive_loss_trigger=config.consecutive_loss_trigger,
-            max_position_size=config.max_position_size,
-        ),
+        risk_config=risk_cfg,
         lookback=config.lookback,
     )
 
@@ -233,6 +237,7 @@ def main():
     bt_p.add_argument("--test-pct", type=float, default=0.2, help="Fraction of data for test (default: 0.2)")
     bt_p.add_argument("--plot", default="equity_curve.png", help="Path to save equity curve plot")
     bt_p.add_argument("--trades", default="trades.csv", help="Path to save trade log CSV")
+    bt_p.add_argument("--min-rr", type=float, default=None, help="Minimum R:R ratio (default: from RiskConfig)")
 
     live_p = sub.add_parser("live", help="Run live paper trading with Databento feed")
     live_p.add_argument("--model", default="model.pt", help="Path to saved model checkpoint")
