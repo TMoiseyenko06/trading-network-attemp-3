@@ -181,6 +181,8 @@ def backtest(args: argparse.Namespace) -> None:
     )
     if args.min_rr is not None:
         risk_cfg.min_rr_ratio = args.min_rr
+    if args.min_confidence is not None:
+        risk_cfg.min_confidence = args.min_confidence
 
     bt = Backtester(
         model_path=args.model,
@@ -238,6 +240,7 @@ def main():
     bt_p.add_argument("--plot", default="equity_curve.png", help="Path to save equity curve plot")
     bt_p.add_argument("--trades", default="trades.csv", help="Path to save trade log CSV")
     bt_p.add_argument("--min-rr", type=float, default=None, help="Minimum R:R ratio (default: from RiskConfig)")
+    bt_p.add_argument("--min-confidence", type=float, default=None, help="Minimum confidence threshold (default: from RiskConfig)")
 
     live_p = sub.add_parser("live", help="Run live paper trading with Databento feed")
     live_p.add_argument("--model", default="model.pt", help="Path to saved model checkpoint")
