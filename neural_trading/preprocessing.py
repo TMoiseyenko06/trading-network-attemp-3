@@ -147,8 +147,9 @@ def dynamic_barrier_labels(
         mfe = max(mfe, 0.0)
         mae = max(mae, 0.0)
 
-        # Hard cap both TP and SL at 50 points (as pct of entry)
-        max_pct = 50.0 / entry
+        # Hard cap both TP and SL at 50 points (as pct of entry),
+        # but also cap the pct itself to prevent huge values on low-priced instruments
+        max_pct = min(50.0 / entry, 0.05)
         target_tp[i] = min(mfe, max_pct)
         target_sl[i] = min(mae, max_pct)
 

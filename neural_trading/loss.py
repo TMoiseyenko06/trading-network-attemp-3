@@ -83,7 +83,7 @@ class TradingLoss(nn.Module):
         soft_pnl_sortino = soft_correct * tp_detached - (1.0 - soft_correct) * sl_detached
         downside = torch.clamp(soft_pnl_sortino, max=0)
         downside_var = (downside ** 2).mean()
-        downside_std = torch.sqrt(downside_var + 1e-6)
+        downside_std = torch.sqrt(downside_var + 1e-3)
         sortino = -(soft_pnl_sortino.mean() / downside_std).clamp(-10, 10)
 
         # 4. Confidence calibration (soft correctness as target)
@@ -113,7 +113,9 @@ class TradingLoss(nn.Module):
         selectivity_penalty = F.relu(0.4 - p_flat_mean) + F.relu(p_flat_mean - 0.8)
 
         # 8. R:R incentive — reward predicted TP/SL ratio above 1.5
-        rr_pred = pred_tp / (pred_sl + 1e-6)
+        #    Detached: gradient through tp/sl division explodes when sl is tiny at init.
+        #    TP/SL sizing is learned via Huber loss (#5); this only shapes the ratio.
+        rr_pred = pred_tp.detach() / (pred_sl.detach() + 1e-6)
         rr_penalty = F.relu(1.5 - rr_pred).mean()
 
         total = (
