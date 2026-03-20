@@ -275,7 +275,7 @@ class Backtester:
         in_trade = False
         current_trade_exit_bar = 0
         current_day = None
-        skipped = {"flat": 0, "low_conf": 0, "risk": 0}
+        skipped = {"flat": 0, "low_conf": 0, "risk_rr": 0, "risk_halted": 0, "risk_cooldown": 0, "risk_other": 0}
         # Diagnostic: sample TP/SL/RR from first 1000 non-flat predictions
         _diag_rrs = []
 
@@ -332,8 +332,14 @@ class Backtester:
             if not allowed:
                 if "Confidence" in reason:
                     skipped["low_conf"] += 1
+                elif "R:R" in reason:
+                    skipped["risk_rr"] += 1
+                elif "halted" in reason.lower() or "limit" in reason.lower():
+                    skipped["risk_halted"] += 1
+                elif "Cooldown" in reason:
+                    skipped["risk_cooldown"] += 1
                 else:
-                    skipped["risk"] += 1
+                    skipped["risk_other"] += 1
                 continue
 
             # Enter trade at next bar's open
@@ -364,7 +370,8 @@ class Backtester:
 
         equity_curve = pd.Series(equity_series).sort_index()
 
-        print(f"  Signals skipped: flat={skipped['flat']} low_conf={skipped['low_conf']} risk={skipped['risk']}")
+        print(f"  Signals skipped: flat={skipped['flat']} low_conf={skipped['low_conf']} "
+              f"rr={skipped['risk_rr']} halted={skipped['risk_halted']} cooldown={skipped['risk_cooldown']} other={skipped['risk_other']}")
 
         # Print TP/SL diagnostic
         if _diag_rrs:
