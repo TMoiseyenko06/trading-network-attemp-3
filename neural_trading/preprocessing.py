@@ -147,10 +147,10 @@ def dynamic_barrier_labels(
         mfe = max(mfe, 0.0)
         mae = max(mae, 0.0)
 
-        target_tp[i] = mfe
-        # Hard cap SL at 25 points (as pct of entry)
-        max_sl_pct = 25.0 / entry
-        target_sl[i] = min(mae, max_sl_pct)
+        # Hard cap both TP and SL at 50 points (as pct of entry)
+        max_pct = 50.0 / entry
+        target_tp[i] = min(mfe, max_pct)
+        target_sl[i] = min(mae, max_pct)
 
         # Realized return at end of window
         final_ret = (closes[min(i + max_bars, n - 1)] - entry) / entry
