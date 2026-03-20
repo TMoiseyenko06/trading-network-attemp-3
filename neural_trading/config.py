@@ -14,7 +14,7 @@ class Config:
 
     # Training
     lr: float = 1e-3
-    epochs_per_fold: int = 30
+    epochs_per_fold: int = 100
     patience: int = 7
     train_months: int = 3
     val_months: int = 1
@@ -23,7 +23,7 @@ class Config:
     # Risk (selective high-conviction trading)
     daily_loss_limit: float = -500.0
     trailing_drawdown_limit: float = -2000.0
-    min_confidence: float = 0.65        # only trade on high-conviction signals
+    min_confidence: float = 0.55        # lowered to allow more trades through
     cooldown_bars: int = 5              # longer cooldown between trades
     consecutive_loss_trigger: int = 3   # tighter loss discipline
     max_position_size: int = 2

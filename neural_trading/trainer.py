@@ -24,7 +24,7 @@ class WalkForwardTrainer:
         lookback: int = 90,
         max_bars: int = 20,
         lr: float = 1e-3,
-        epochs_per_fold: int = 30,
+        epochs_per_fold: int = 100,
         patience: int = 7,
     ):
         self.gpu = gpu_profile or detect_gpu()

@@ -130,7 +130,7 @@ class DecisionHead(nn.Module):
     MIN_TP_PCT = 0.0004   # ~10 NQ pts at 24000 — tight but realistic scalp target
     MAX_TP_PCT = 0.004    # ~96 NQ pts — cap to prevent model from waiting for home runs
     MIN_SL_PCT = 0.0003   # ~7 NQ pts — tight stop, just above noise floor
-    MAX_SL_PCT = 0.003    # ~72 NQ pts — prevents wide stops that blow risk limits
+    MAX_SL_PCT = 0.005    # ~120 NQ pts — wider stops to avoid noise clipping
 
     def __init__(self, hidden_dim: int, num_classes: int = 3):
         super().__init__()
