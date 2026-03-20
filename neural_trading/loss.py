@@ -55,6 +55,17 @@ class TradingLoss(nn.Module):
         true_sl: torch.Tensor,             # (B,) float
     ) -> tuple[torch.Tensor, dict[str, float]]:
 
+        # Force float32 for all loss math — float16 under AMP causes NaN
+        # due to underflow in small TP/SL values and division precision loss
+        direction_logits = direction_logits.float()
+        confidence = confidence.float()
+        pred_magnitude = pred_magnitude.float()
+        pred_tp = pred_tp.float()
+        pred_sl = pred_sl.float()
+        true_magnitude = true_magnitude.float()
+        true_tp = true_tp.float()
+        true_sl = true_sl.float()
+
         # 1. Classification loss (with class weights to handle imbalance)
         cls_loss = F.cross_entropy(direction_logits, true_labels, weight=self.class_weights)
 
@@ -62,17 +73,17 @@ class TradingLoss(nn.Module):
         mag_loss = F.mse_loss(pred_magnitude, true_magnitude)
 
         # Shared quantities
-        probs = F.softmax(direction_logits.float(), dim=1)  # (B, 3)
+        probs = F.softmax(direction_logits, dim=1)  # (B, 3)
         true_onehot = F.one_hot(true_labels, num_classes=direction_logits.shape[1]).float()
         soft_correct = (probs * true_onehot).sum(dim=1)  # (B,) in [0, 1]
 
         # 3. Sortino ratio (detached TP/SL — only teaches direction quality)
-        tp_detached = pred_tp.detach().float()
-        sl_detached = pred_sl.detach().float()
+        tp_detached = pred_tp.detach()
+        sl_detached = pred_sl.detach()
         soft_pnl_sortino = soft_correct * tp_detached - (1.0 - soft_correct) * sl_detached
         downside = torch.clamp(soft_pnl_sortino, max=0)
         downside_var = (downside ** 2).mean()
-        downside_std = torch.sqrt(downside_var + 1e-4)
+        downside_std = torch.sqrt(downside_var + 1e-6)
         sortino = -(soft_pnl_sortino.mean() / downside_std).clamp(-10, 10)
 
         # 4. Confidence calibration (soft correctness as target)
@@ -90,7 +101,7 @@ class TradingLoss(nn.Module):
         #    Gradient flows through direction only (not TP/SL sizing).
         #    TP/SL learning happens via the Huber loss (#5) instead.
         p_trade = 1.0 - probs[:, 2]  # probability of NOT predicting flat
-        expected_pnl = soft_correct * true_tp.float() - (1.0 - soft_correct) * true_sl.float()
+        expected_pnl = soft_correct * true_tp - (1.0 - soft_correct) * true_sl
         # Scale by trade probability: no reward for being right if you don't trade
         weighted_pnl = expected_pnl * p_trade
         pnl_loss = -weighted_pnl.mean()  # negative because we maximize profit
@@ -102,7 +113,7 @@ class TradingLoss(nn.Module):
         selectivity_penalty = F.relu(0.4 - p_flat_mean) + F.relu(p_flat_mean - 0.8)
 
         # 8. R:R incentive — reward predicted TP/SL ratio above 1.5
-        rr_pred = pred_tp / (pred_sl + 1e-8)
+        rr_pred = pred_tp / (pred_sl + 1e-6)
         rr_penalty = F.relu(1.5 - rr_pred).mean()
 
         total = (
@@ -128,7 +139,7 @@ class TradingLoss(nn.Module):
             trade_accuracy = 0.0
 
         # Metrics for monitoring
-        rr_ratio = pred_tp / (pred_sl + 1e-8)
+        rr_ratio = pred_tp / (pred_sl + 1e-6)
         avg_pnl = expected_pnl.mean().item()
 
         # Average confidence on trades (where model chose to trade)

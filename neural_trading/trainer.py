@@ -276,7 +276,7 @@ class WalkForwardTrainer:
         # Conservative initial scale — default 65536 causes scaled_loss to overflow
         # float16 max (65504) when loss > 1.0, producing inf gradients that make
         # scaler.step() skip EVERY optimizer step → model never learns.
-        scaler = torch.amp.GradScaler("cuda", init_scale=256) if self.gpu.use_amp else None
+        scaler = torch.amp.GradScaler("cuda", init_scale=128) if self.gpu.use_amp else None
 
         best_val_loss = float("inf")
         patience_counter = 0
@@ -440,7 +440,7 @@ class WalkForwardTrainer:
         )
 
         criterion = TradingLoss(class_weights=class_weights_t)
-        scaler = torch.amp.GradScaler("cuda", init_scale=256) if self.gpu.use_amp else None
+        scaler = torch.amp.GradScaler("cuda", init_scale=128) if self.gpu.use_amp else None
         if scaler is not None and checkpoint.get("scaler_state") is not None:
             scaler.load_state_dict(checkpoint["scaler_state"])
 
