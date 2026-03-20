@@ -412,11 +412,22 @@ class WalkForwardTrainer:
             shuffle=False,
         )
 
-        # Rebuild model and load weights
-        model = self._build_model(input_dim)
+        # Rebuild model and load weights (load into raw model before compile)
+        raw_model = NeuralOHLCVNet(
+            input_dim=input_dim,
+            hidden_dim=self.hidden_dim,
+            conv_blocks=3,
+            attn_heads=4,
+            lstm_layers=2,
+            num_classes=3,
+        ).to(self.device)
         state = checkpoint["model_state"]
         state = {k.removeprefix("_orig_mod."): v for k, v in state.items()}
-        model.load_state_dict(state)
+        raw_model.load_state_dict(state)
+        if self.gpu.use_compile:
+            model = torch.compile(raw_model)
+        else:
+            model = raw_model
 
         # Rebuild optimizer and load state
         optimizer = torch.optim.AdamW(model.parameters(), lr=self.lr, weight_decay=1e-4)
