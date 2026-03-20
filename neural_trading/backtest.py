@@ -85,8 +85,8 @@ class Backtester:
         max_bars_in_trade: int = 20,
         risk_config: Optional[RiskConfig] = None,
         lookback: int = 90,
-        max_sl_points: float = 50.0,     # hard cap on stop-loss distance in points
-        max_tp_points: float = 50.0,     # hard cap on take-profit distance in points
+        max_sl_points: float = 100.0,    # hard cap on stop-loss distance in points
+        max_tp_points: float = 300.0,    # hard cap on take-profit distance in points
     ):
         self.point_value = point_value
         self.starting_equity = starting_equity
