@@ -246,6 +246,7 @@ class LiveTrader:
         # Check with risk manager (pass TP/SL for R:R filtering)
         allowed, size, reason = self.risk_mgr.check_trade(
             conf, direction, signal["tp_pct"], signal["sl_pct"],
+            current_bar=self._signal_count,
         )
 
         self._signal_count += 1
@@ -338,7 +339,7 @@ class LiveTrader:
         if hit_tp or hit_sl or pos["bars_held"] >= self.config.max_bars:
             # Estimate PnL (simplified: per contract, point value varies by instrument)
             pnl = ret * pos["size"] * 1000  # rough NQ point value
-            self.risk_mgr.record_trade_result(pnl)
+            self.risk_mgr.record_trade_result(pnl, entry_bar=self._signal_count)
 
             result = "TP" if hit_tp else ("SL" if hit_sl else "TIMEOUT")
             ts_str = ts.strftime("%H:%M:%S")

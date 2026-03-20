@@ -160,7 +160,7 @@ def infer(args: argparse.Namespace) -> None:
     print(f"  Predicted TP: {tp:.4%} (${last_close * tp:.2f})")
     print(f"  Predicted SL: {sl:.4%} (${last_close * sl:.2f})")
 
-    allowed, size, reason = risk_mgr.check_trade(conf, direction)
+    allowed, size, reason = risk_mgr.check_trade(conf, direction, tp, sl)
     print(f"\nRisk check: {'APPROVED' if allowed else 'BLOCKED'}")
     print(f"  Position size: {size}")
     print(f"  Reason: {reason}")
@@ -178,6 +178,8 @@ def backtest(args: argparse.Namespace) -> None:
         cooldown_bars=config.cooldown_bars,
         consecutive_loss_trigger=config.consecutive_loss_trigger,
         max_position_size=config.max_position_size,
+        max_trades_per_day=config.max_trades_per_day,
+        min_bars_between_trades=config.min_bars_between_trades,
     )
     if args.min_rr is not None:
         risk_cfg.min_rr_ratio = args.min_rr

@@ -10,13 +10,15 @@ class RiskConfig:
     """Risk parameters — these are non-negotiable hard limits."""
     daily_loss_limit: float = -500.0          # max daily loss in dollars
     trailing_drawdown_limit: float = -2000.0  # max trailing drawdown
-    min_confidence: float = 0.55              # lowered to allow more trades through
+    min_confidence: float = 0.70              # high-conviction only
     cooldown_bars: int = 5                    # bars to wait after consecutive losses
     consecutive_loss_trigger: int = 3         # losses before cooldown activates
     max_position_size: int = 1                # max contracts — 1 for initial development
     drawdown_scale_start: float = 0.5         # start scaling at 50% of drawdown limit
     min_rr_ratio: float = 1.5                 # minimum R:R — only take trades with edge
-    no_halt: bool = False                      # disable circuit breakers for diagnostics
+    no_halt: bool = False                     # disable circuit breakers for diagnostics
+    max_trades_per_day: int = 10              # hard cap on daily trade count
+    min_bars_between_trades: int = 30         # minimum bars between entries (~30 min on 1-min)
 
 
 @dataclass
@@ -31,6 +33,7 @@ class RiskState:
     trades_today: int = 0
     is_halted: bool = False
     halt_reason: str = ""
+    last_trade_bar: int = -9999              # bar index of last trade entry
 
 
 class RiskManager:
@@ -46,6 +49,7 @@ class RiskManager:
     def check_trade(
         self, confidence: float, predicted_direction: int,
         tp_pct: float = 0.0, sl_pct: float = 0.0,
+        current_bar: int = 0,
     ) -> tuple[bool, int, str]:
         """Decide whether a trade is allowed and compute position size.
 
@@ -54,6 +58,7 @@ class RiskManager:
             predicted_direction: 0=long winner, 1=short loser, 2=flat/timeout
             tp_pct: predicted take-profit as decimal percentage
             sl_pct: predicted stop-loss as decimal percentage
+            current_bar: current bar index for min_bars_between_trades check
 
         Returns:
             (allowed, position_size, reason)
@@ -76,6 +81,15 @@ class RiskManager:
         # Don't trade flat/timeout signals
         if predicted_direction == 2:
             return False, 0, "Signal is flat/timeout — no trade"
+
+        # Max trades per day
+        if self.state.trades_today >= self.config.max_trades_per_day:
+            return False, 0, f"Max trades/day ({self.config.max_trades_per_day}) reached"
+
+        # Minimum bar gap between trades
+        bars_since = current_bar - self.state.last_trade_bar
+        if bars_since < self.config.min_bars_between_trades:
+            return False, 0, f"Min bar gap: {bars_since}/{self.config.min_bars_between_trades}"
 
         # Minimum confidence filter
         if confidence < self.config.min_confidence:
@@ -103,11 +117,12 @@ class RiskManager:
 
         return True, size, "Trade approved"
 
-    def record_trade_result(self, pnl: float) -> None:
+    def record_trade_result(self, pnl: float, entry_bar: int = 0) -> None:
         """Update state after a trade completes."""
         self.state.daily_pnl += pnl
         self.state.current_equity += pnl
         self.state.trades_today += 1
+        self.state.last_trade_bar = entry_bar
 
         # Update peak and trailing drawdown
         if self.state.current_equity > self.state.peak_equity:

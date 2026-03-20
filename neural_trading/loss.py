@@ -15,7 +15,8 @@ class TradingLoss(nn.Module):
         4. Confidence calibration via soft correctness probabilities
         5. TP/SL regression: Huber loss on predicted take-profit and stop-loss
         6. Direct P&L maximization: expected profit with full gradient through TP/SL
-        7. Trade frequency bonus: penalizes the model for predicting FLAT too often
+        7. Trade selectivity: penalizes model for trading too often (target ~60% flat)
+        8. R:R incentive: rewards predicted TP/SL ratio above minimum threshold
     """
 
     def __init__(
@@ -24,9 +25,10 @@ class TradingLoss(nn.Module):
         mag_weight: float = 0.2,
         sortino_weight: float = 0.2,
         confidence_weight: float = 0.2,
-        tp_sl_weight: float = 0.3,
+        tp_sl_weight: float = 0.6,
         pnl_weight: float = 1.0,
         frequency_weight: float = 0.3,
+        rr_weight: float = 0.4,
         class_weights: torch.Tensor | None = None,
     ):
         super().__init__()
@@ -37,6 +39,7 @@ class TradingLoss(nn.Module):
         self.tp_sl_weight = tp_sl_weight
         self.pnl_weight = pnl_weight
         self.frequency_weight = frequency_weight
+        self.rr_weight = rr_weight
         self.register_buffer("class_weights", class_weights)
 
     def forward(
@@ -92,12 +95,15 @@ class TradingLoss(nn.Module):
         weighted_pnl = expected_pnl * p_trade
         pnl_loss = -weighted_pnl.mean()  # negative because we maximize profit
 
-        # 7. Trade frequency bonus — penalize excessive FLAT predictions
-        #    Target: model should predict FLAT ≤ ~20% of the time
-        #    Penalty kicks in when P(flat) > target_flat_rate
+        # 7. Trade selectivity — penalize trading too often
+        #    Target: model should predict FLAT ~60% of time (selective trading)
+        #    Penalize both over-trading (flat < 40%) and never-trading (flat > 80%)
         p_flat_mean = probs[:, 2].mean()
-        target_flat_rate = 0.2
-        frequency_penalty = F.relu(p_flat_mean - target_flat_rate)
+        selectivity_penalty = F.relu(0.4 - p_flat_mean) + F.relu(p_flat_mean - 0.8)
+
+        # 8. R:R incentive — reward predicted TP/SL ratio above 1.5
+        rr_pred = pred_tp / (pred_sl + 1e-8)
+        rr_penalty = F.relu(1.5 - rr_pred).mean()
 
         total = (
             self.cls_weight * cls_loss
@@ -106,7 +112,8 @@ class TradingLoss(nn.Module):
             + self.confidence_weight * conf_loss
             + self.tp_sl_weight * tp_sl_loss
             + self.pnl_weight * pnl_loss
-            + self.frequency_weight * frequency_penalty
+            + self.frequency_weight * selectivity_penalty
+            + self.rr_weight * rr_penalty
         )
 
         # Accuracy metric (hard, for reporting only)
@@ -123,7 +130,6 @@ class TradingLoss(nn.Module):
         # Metrics for monitoring
         rr_ratio = pred_tp / (pred_sl + 1e-8)
         avg_pnl = expected_pnl.mean().item()
-        flat_rate = p_flat_mean.item()
 
         # Average confidence on trades (where model chose to trade)
         conf_sig = torch.sigmoid(confidence).float()
@@ -140,8 +146,9 @@ class TradingLoss(nn.Module):
             "conf_loss": conf_loss.item(),
             "tp_sl_loss": tp_sl_loss.item(),
             "pnl": avg_pnl,
-            "flat_rate": flat_rate,
+            "flat_rate": p_flat_mean.item(),
             "rr_ratio": rr_ratio.mean().item(),
+            "rr_penalty": rr_penalty.item(),
             "accuracy": accuracy,
             "trade_acc": trade_accuracy,
             "avg_trade_conf": avg_trade_conf,

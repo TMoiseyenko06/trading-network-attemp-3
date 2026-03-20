@@ -288,7 +288,7 @@ class Backtester:
         in_trade = False
         current_trade_exit_bar = 0
         current_day = None
-        skipped = {"flat": 0, "low_conf": 0, "risk_rr": 0, "risk_halted": 0, "risk_cooldown": 0, "risk_other": 0}
+        skipped = {"flat": 0, "low_conf": 0, "risk_rr": 0, "risk_halted": 0, "risk_cooldown": 0, "max_trades": 0, "bar_gap": 0, "risk_other": 0}
         # Diagnostic: sample TP/SL/RR from first 1000 non-flat predictions
         _diag_rrs = []
 
@@ -341,6 +341,7 @@ class Backtester:
             # Risk check
             allowed, size, reason = self.risk_mgr.check_trade(
                 confidence, direction_idx, tp_pct, sl_pct,
+                current_bar=i,
             )
             if not allowed:
                 if "Confidence" in reason:
@@ -351,6 +352,10 @@ class Backtester:
                     skipped["risk_halted"] += 1
                 elif "Cooldown" in reason:
                     skipped["risk_cooldown"] += 1
+                elif "Max trades" in reason:
+                    skipped["max_trades"] += 1
+                elif "bar gap" in reason:
+                    skipped["bar_gap"] += 1
                 else:
                     skipped["risk_other"] += 1
                 continue
@@ -369,7 +374,7 @@ class Backtester:
 
             # Update state
             equity += trade.pnl
-            self.risk_mgr.record_trade_result(trade.pnl)
+            self.risk_mgr.record_trade_result(trade.pnl, entry_bar=i)
             in_trade = True
             current_trade_exit_bar = trade.exit_bar
 
@@ -384,7 +389,8 @@ class Backtester:
         equity_curve = pd.Series(equity_series).sort_index()
 
         print(f"  Signals skipped: flat={skipped['flat']} low_conf={skipped['low_conf']} "
-              f"rr={skipped['risk_rr']} halted={skipped['risk_halted']} cooldown={skipped['risk_cooldown']} other={skipped['risk_other']}")
+              f"rr={skipped['risk_rr']} halted={skipped['risk_halted']} cooldown={skipped['risk_cooldown']} "
+              f"max_trades={skipped['max_trades']} bar_gap={skipped['bar_gap']} other={skipped['risk_other']}")
 
         # Print TP/SL diagnostic
         if _diag_rrs:

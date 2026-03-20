@@ -126,11 +126,12 @@ class DecisionHead(nn.Module):
     """
 
     # Bounds in raw pct space (training targets are clipped to match)
-    # Tuned for multi-bar trades on NQ (max_bars=20) with prop firm consistency
-    MIN_TP_PCT = 0.0004   # ~10 NQ pts at 24000 — tight but realistic scalp target
-    MAX_TP_PCT = 0.015    # ~360 NQ pts — room for 20-bar moves to develop
+    # Asymmetric: MIN_TP > MIN_SL guarantees minimum R:R floor of ~2.7
+    # Tuned for NQ 1-min bars with max_bars=20 (20-minute trade window)
+    MIN_TP_PCT = 0.0008   # ~20 NQ pts at 24000 — meaningful profit target
+    MAX_TP_PCT = 0.012    # ~290 NQ pts — room for 20-bar moves to develop
     MIN_SL_PCT = 0.0003   # ~7 NQ pts — tight stop, just above noise floor
-    MAX_SL_PCT = 0.008    # ~192 NQ pts — proportional to wider TP range
+    MAX_SL_PCT = 0.004    # ~96 NQ pts — tight ceiling prevents "never hit" stops
 
     def __init__(self, hidden_dim: int, num_classes: int = 3):
         super().__init__()
