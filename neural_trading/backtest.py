@@ -85,12 +85,14 @@ class Backtester:
         max_bars_in_trade: int = 20,
         risk_config: Optional[RiskConfig] = None,
         lookback: int = 90,
+        max_sl_points: float = 25.0,     # hard cap on stop-loss distance in points
     ):
         self.point_value = point_value
         self.starting_equity = starting_equity
         self.commission = commission_per_contract
         self.max_bars_in_trade = max_bars_in_trade
         self.lookback = lookback
+        self.max_sl_points = max_sl_points
 
         self.gpu = detect_gpu()
         self.device = self.gpu.device
@@ -158,9 +160,14 @@ class Backtester:
         if direction == "LONG":
             tp_price = entry_price * (1 + tp_pct)
             sl_price = entry_price * (1 - sl_pct)
+            # Hard cap: never risk more than max_sl_points
+            if entry_price - sl_price > self.max_sl_points:
+                sl_price = entry_price - self.max_sl_points
         else:
             tp_price = entry_price * (1 - tp_pct)
             sl_price = entry_price * (1 + sl_pct)
+            if sl_price - entry_price > self.max_sl_points:
+                sl_price = entry_price + self.max_sl_points
 
         exit_bar = entry_idx
         exit_price = entry_price
