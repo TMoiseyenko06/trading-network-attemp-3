@@ -16,6 +16,7 @@ class RiskConfig:
     max_position_size: int = 1                # max contracts — 1 for initial development
     drawdown_scale_start: float = 0.5         # start scaling at 50% of drawdown limit
     min_rr_ratio: float = 1.5                 # minimum R:R — only take trades with edge
+    no_halt: bool = False                      # disable circuit breakers for diagnostics
 
 
 @dataclass
@@ -57,20 +58,20 @@ class RiskManager:
         Returns:
             (allowed, position_size, reason)
         """
-        # Circuit breaker: daily loss limit
-        if self.state.daily_pnl <= self.config.daily_loss_limit:
-            self.state.is_halted = True
-            self.state.halt_reason = "daily_loss_limit"
-            return False, 0, "Daily loss limit reached"
+        # Circuit breakers (skipped with --no-halt)
+        if not self.config.no_halt:
+            if self.state.daily_pnl <= self.config.daily_loss_limit:
+                self.state.is_halted = True
+                self.state.halt_reason = "daily_loss_limit"
+                return False, 0, "Daily loss limit reached"
 
-        # Circuit breaker: trailing drawdown
-        if self.state.trailing_drawdown <= self.config.trailing_drawdown_limit:
-            self.state.is_halted = True
-            self.state.halt_reason = "trailing_drawdown"
-            return False, 0, "Trailing drawdown limit reached"
+            if self.state.trailing_drawdown <= self.config.trailing_drawdown_limit:
+                self.state.is_halted = True
+                self.state.halt_reason = "trailing_drawdown"
+                return False, 0, "Trailing drawdown limit reached"
 
-        if self.state.is_halted:
-            return False, 0, f"Trading halted: {self.state.halt_reason}"
+            if self.state.is_halted:
+                return False, 0, f"Trading halted: {self.state.halt_reason}"
 
         # Don't trade flat/timeout signals
         if predicted_direction == 2:
