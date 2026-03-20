@@ -13,7 +13,7 @@ class RiskConfig:
     min_confidence: float = 0.55              # lowered to allow more trades through
     cooldown_bars: int = 5                    # bars to wait after consecutive losses
     consecutive_loss_trigger: int = 3         # losses before cooldown activates
-    max_position_size: int = 4                # max contracts
+    max_position_size: int = 1                # max contracts — 1 for initial development
     drawdown_scale_start: float = 0.5         # start scaling at 50% of drawdown limit
     min_rr_ratio: float = 1.5                 # minimum R:R — only take trades with edge
 
