@@ -54,8 +54,9 @@ def detect_gpu() -> GPUProfile:
     use_amp = False
     # TF32 available on Ampere+ (8.0+)
     use_tf32 = cc >= (8, 0)
-    # torch.compile works best on Ampere+
-    use_compile = cc >= (8, 0) and hasattr(torch, "compile")
+    # torch.compile disabled — can cause NaN in some backward passes
+    # with complex multi-objective losses. Re-enable after model stabilizes.
+    use_compile = False
 
     # Scale batch size based on VRAM
     if mem_gb >= 40:      # A100-80GB tier — massive VRAM headroom

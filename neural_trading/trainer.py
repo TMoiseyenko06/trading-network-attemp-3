@@ -154,12 +154,21 @@ class WalkForwardTrainer:
             loss, metrics = criterion(dir_logits, conf, pred_mag, pred_tp, pred_sl, y_cls, y_mag, y_tp, y_sl)
             loss = loss / self.gpu.gradient_accumulation_steps
 
+            # Skip batches with NaN loss — prevents NaN gradients from
+            # corrupting model weights (one bad batch kills the entire run)
+            if torch.isnan(loss) or torch.isinf(loss):
+                optimizer.zero_grad(set_to_none=True)
+                skipped_steps += 1
+                total_opt_steps += 1
+                if step == 0:
+                    grad_norm = float("nan")
+                continue
+
             if scaler is not None:
                 scaler.scale(loss).backward()
                 if (step + 1) % self.gpu.gradient_accumulation_steps == 0:
                     scaler.unscale_(optimizer)
                     grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 5.0)
-                    # Track whether scaler skips this step (inf/nan gradients)
                     old_scale = scaler.get_scale()
                     scaler.step(optimizer)
                     scaler.update()
@@ -172,6 +181,12 @@ class WalkForwardTrainer:
                 loss.backward()
                 if (step + 1) % self.gpu.gradient_accumulation_steps == 0:
                     grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+                    # Skip optimizer step if gradients are NaN
+                    if torch.isnan(grad_norm) or torch.isinf(grad_norm):
+                        optimizer.zero_grad(set_to_none=True)
+                        skipped_steps += 1
+                        total_opt_steps += 1
+                        continue
                     optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
                     total_opt_steps += 1
