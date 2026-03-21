@@ -149,8 +149,10 @@ class WalkForwardTrainer:
             # Data already on GPU from _make_loader
             with torch.amp.autocast("cuda", enabled=self.gpu.use_amp):
                 dir_logits, conf, pred_mag, pred_tp, pred_sl = model(X)
-                loss, metrics = criterion(dir_logits, conf, pred_mag, pred_tp, pred_sl, y_cls, y_mag, y_tp, y_sl)
-                loss = loss / self.gpu.gradient_accumulation_steps
+            # Loss in float32 outside autocast — prevents float16 intermediates
+            # from corrupting backward pass (softmax(float16_inf) = NaN)
+            loss, metrics = criterion(dir_logits, conf, pred_mag, pred_tp, pred_sl, y_cls, y_mag, y_tp, y_sl)
+            loss = loss / self.gpu.gradient_accumulation_steps
 
             if scaler is not None:
                 scaler.scale(loss).backward()
@@ -202,7 +204,7 @@ class WalkForwardTrainer:
             # Data already on GPU from _make_loader
             with torch.amp.autocast("cuda", enabled=self.gpu.use_amp):
                 dir_logits, conf, pred_mag, pred_tp, pred_sl = model(X)
-                _, metrics = criterion(dir_logits, conf, pred_mag, pred_tp, pred_sl, y_cls, y_mag, y_tp, y_sl)
+            _, metrics = criterion(dir_logits, conf, pred_mag, pred_tp, pred_sl, y_cls, y_mag, y_tp, y_sl)
 
             for k, v in metrics.items():
                 total_metrics[k] = total_metrics.get(k, 0) + v

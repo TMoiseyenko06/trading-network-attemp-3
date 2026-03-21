@@ -59,8 +59,10 @@ class TradingLoss(nn.Module):
     ) -> tuple[torch.Tensor, dict[str, float]]:
 
         # Force float32 for all loss math — float16 under AMP causes NaN
-        direction_logits = direction_logits.float()
-        confidence = confidence.float()
+        # Clamp logits: float16 max is 65504, so model outputs can be inf
+        # after conversion → softmax(inf) = NaN → all losses NaN
+        direction_logits = direction_logits.float().clamp(-50, 50)
+        confidence = confidence.float().clamp(-50, 50)
         pred_magnitude = pred_magnitude.float()
         true_magnitude = true_magnitude.float()
 
