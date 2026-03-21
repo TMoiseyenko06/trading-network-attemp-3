@@ -126,7 +126,6 @@ def infer(args: argparse.Namespace) -> None:
     risk_mgr = RiskManager(
         RiskConfig(
             daily_loss_limit=config.daily_loss_limit,
-            trailing_drawdown_limit=config.trailing_drawdown_limit,
             min_confidence=config.min_confidence,
             cooldown_bars=config.cooldown_bars,
             consecutive_loss_trigger=config.consecutive_loss_trigger,
@@ -175,7 +174,6 @@ def backtest(args: argparse.Namespace) -> None:
 
     risk_cfg = RiskConfig(
         daily_loss_limit=config.daily_loss_limit,
-        trailing_drawdown_limit=config.trailing_drawdown_limit,
         min_confidence=config.min_confidence,
         cooldown_bars=config.cooldown_bars,
         consecutive_loss_trigger=config.consecutive_loss_trigger,

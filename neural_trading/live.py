@@ -113,7 +113,6 @@ class LiveTrader:
         self.risk_mgr = RiskManager(
             RiskConfig(
                 daily_loss_limit=self.config.daily_loss_limit,
-                trailing_drawdown_limit=self.config.trailing_drawdown_limit,
                 min_confidence=self.config.min_confidence,
                 cooldown_bars=self.config.cooldown_bars,
                 consecutive_loss_trigger=self.config.consecutive_loss_trigger,
