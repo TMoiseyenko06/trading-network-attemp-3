@@ -71,7 +71,7 @@ class TradingLoss(nn.Module):
         # NaN guard
         if torch.isnan(total):
             if not hasattr(self, '_nan_warned'):
-                print(f"  WARNING: NaN in loss — cls={cls_loss.item():.4f} sel={selectivity_penalty.item():.4f}")
+                print(f"  WARNING: NaN in loss — cls={cls_loss.item():.4f}")
                 self._nan_warned = True
             total = cls_loss if not torch.isnan(cls_loss) else torch.zeros(1, device=direction_logits.device, requires_grad=True)
 

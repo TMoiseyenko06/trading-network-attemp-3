@@ -268,17 +268,21 @@ def build_sequences(
     labels: pd.DataFrame,
     lookback: int = 90,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Build sliding-window sequences for training.
+    """Return flat arrays + lookback for lazy sequence building.
+
+    Instead of materializing (N, lookback, features) which needs ~10GB+ RAM
+    for 2.5M bars, we return the flat feature array and let the DataLoader
+    build sequences on-the-fly on GPU.
 
     Returns:
-        X: (N, lookback, num_features)
-        y_class: (N,) int labels
-        y_magnitude: (N,) float magnitudes
-        y_tp: (N,) float target take-profit pct
-        y_sl: (N,) float target stop-loss pct
+        feat: (N, num_features) flat feature array
+        y_class: (N,) int labels (aligned to feat, first `lookback-1` are padding)
+        y_magnitude: (N,) float
+        y_tp: (N,) float
+        y_sl: (N,) float
     """
     feat = features.values.astype(np.float32)
-    lab = labels["label"].values
+    lab = labels["label"].values.astype(np.int64)
     mag = labels["magnitude"].values.astype(np.float32)
 
     has_tp_sl = "target_tp" in labels.columns and "target_sl" in labels.columns
@@ -289,19 +293,16 @@ def build_sequences(
         tp = np.zeros(len(lab), dtype=np.float32)
         sl = np.zeros(len(lab), dtype=np.float32)
 
+    # Replace any remaining NaN with 0 in features
+    nan_count = np.isnan(feat).sum()
+    if nan_count > 0:
+        print(f"  Replacing {nan_count} NaN values in features with 0")
+        np.nan_to_num(feat, copy=False)
+
     n = len(feat) - lookback
     if n <= 0:
         raise ValueError(f"Not enough data: {len(feat)} rows with lookback={lookback}")
 
-    X = np.lib.stride_tricks.sliding_window_view(feat, lookback, axis=0)
-    # sliding_window_view gives (N, features, lookback) — transpose to (N, lookback, features)
-    X = np.moveaxis(X, -1, 1).copy()
+    print(f"  Sequences: {n + 1} samples (lazy, {feat.shape[1]} features × {lookback} lookback)")
 
-    y_class = lab[lookback - 1:].copy()
-    y_mag = mag[lookback - 1:].copy()
-    y_tp = tp[lookback - 1:].copy()
-    y_sl = sl[lookback - 1:].copy()
-
-    # Drop any rows with NaN in features
-    valid = ~np.isnan(X.reshape(X.shape[0], -1)).any(axis=1)
-    return X[valid], y_class[valid], y_mag[valid], y_tp[valid], y_sl[valid]
+    return feat, lab, mag, tp, sl

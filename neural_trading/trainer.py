@@ -2,7 +2,7 @@
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, Dataset
 import numpy as np
 import pandas as pd
 from typing import Optional
@@ -13,6 +13,45 @@ from .model import NeuralOHLCVNet
 from .loss import TradingLoss
 from .gpu import GPUProfile, detect_gpu, scale_dim
 from .preprocessing import compute_features, add_time_features, fixed_barrier_labels, build_sequences
+
+
+class SequenceDataset(Dataset):
+    """Lazy sliding-window dataset — builds sequences on-the-fly on GPU.
+
+    Stores flat features (N, F) on GPU and slices (lookback, F) windows per sample.
+    Uses ~120MB GPU for 2.5M × 12 features instead of ~10GB RAM for (2.5M, 90, 12).
+    """
+
+    def __init__(self, feat: torch.Tensor, y_cls: torch.Tensor,
+                 y_mag: torch.Tensor, y_tp: torch.Tensor, y_sl: torch.Tensor,
+                 lookback: int, start: int, end: int):
+        """
+        Args:
+            feat: (total_bars, num_features) on GPU
+            y_cls/y_mag/y_tp/y_sl: (total_bars,) on GPU
+            lookback: window size
+            start/end: valid sample range (indices into y arrays, i.e. feat index = start + lookback - 1)
+        """
+        self.feat = feat
+        self.y_cls = y_cls
+        self.y_mag = y_mag
+        self.y_tp = y_tp
+        self.y_sl = y_sl
+        self.lookback = lookback
+        self.start = start
+        self.end = end
+
+    def __len__(self):
+        return self.end - self.start
+
+    def __getitem__(self, idx):
+        # Map dataset idx to position in the flat arrays
+        pos = self.start + idx  # position in y arrays (aligned to lookback-1)
+        feat_start = pos  # feat[pos : pos + lookback] gives the lookback window
+        x = self.feat[feat_start : feat_start + self.lookback]  # (lookback, F)
+        # Labels are aligned: y[pos + lookback - 1] is the label for this window
+        label_idx = pos + self.lookback - 1
+        return x, self.y_cls[label_idx], self.y_mag[label_idx], self.y_tp[label_idx], self.y_sl[label_idx]
 
 
 class WalkForwardTrainer:
@@ -48,8 +87,12 @@ class WalkForwardTrainer:
         print(f"  Batch size: {self.gpu.batch_size} | Hidden dim: {self.hidden_dim} | "
               f"Workers: {self.gpu.num_workers}")
 
-    def _prepare_data(self, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Preprocess raw OHLCV dataframe into sequences."""
+    def _prepare_data(self, df: pd.DataFrame) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int]:
+        """Preprocess raw OHLCV dataframe into flat GPU tensors.
+
+        Returns flat arrays on GPU — sequences are built lazily by SequenceDataset.
+        This uses ~120MB GPU instead of ~10GB+ RAM for the full sliding window.
+        """
         features = compute_features(df)
         features = add_time_features(features)
         labels = fixed_barrier_labels(
@@ -63,17 +106,13 @@ class WalkForwardTrainer:
         features = features.loc[valid_start:]
         labels = labels.loc[valid_start:]
 
-        # Replace inf/NaN before standardization — these come from
-        # pct_change() on the first row and division-by-zero edge cases
+        # Replace inf/NaN before standardization
         features = features.replace([np.inf, -np.inf], np.nan).fillna(0)
 
-        # Standardize features (zero mean, unit variance) so the network
-        # receives reasonably-scaled inputs instead of tiny pct-change values
+        # Standardize features
         self._feat_mean = features.mean()
         self._feat_std = features.std().replace(0, 1)
         features = (features - self._feat_mean) / self._feat_std
-
-        # Clip extreme outliers to prevent float16 overflow in AMP
         features = features.clip(-10, 10)
 
         # Diagnostics
@@ -88,26 +127,33 @@ class WalkForwardTrainer:
         print(f"\n  Label distribution: 0(win)={lbl_counts[0]} 1(lose)={lbl_counts[1]} 2(flat)={lbl_counts[2]}")
         print(f"  Magnitude: mean={labels['magnitude'].mean():.6f} std={labels['magnitude'].std():.6f}")
 
-        # Log-transform magnitude to tame heavy tails
-        # Clip to ≥ 0 first — some edge cases in labeling can produce negatives
         labels = labels.copy()
         labels["magnitude"] = np.log1p(labels["magnitude"].clip(lower=0))
 
-        return build_sequences(features, labels, self.lookback)
+        input_dim = features.shape[1]
+
+        # Build flat arrays via build_sequences (handles NaN cleanup)
+        feat, lab, mag, tp, sl = build_sequences(features, labels, self.lookback)
+
+        # Move flat arrays to GPU — ~120MB for 2.5M × 12 float32
+        dev = self.device
+        feat_t = torch.from_numpy(feat).to(dev)
+        lab_t = torch.from_numpy(lab).to(dev)
+        mag_t = torch.from_numpy(mag.astype(np.float32)).to(dev)
+        tp_t = torch.from_numpy(tp.astype(np.float32)).to(dev)
+        sl_t = torch.from_numpy(sl.astype(np.float32)).to(dev)
+
+        return feat_t, lab_t, mag_t, tp_t, sl_t, input_dim
 
     def _make_loader(
-        self, X: np.ndarray, y_cls: np.ndarray, y_mag: np.ndarray,
-        y_tp: np.ndarray, y_sl: np.ndarray, shuffle: bool = True,
+        self, feat: torch.Tensor, y_cls: torch.Tensor, y_mag: torch.Tensor,
+        y_tp: torch.Tensor, y_sl: torch.Tensor,
+        start: int, end: int, shuffle: bool = True,
     ) -> DataLoader:
-        # Move tensors to GPU upfront — avoids CPU→GPU transfers every batch
-        # and eliminates the data-loading bottleneck entirely
-        dev = self.device
-        dataset = TensorDataset(
-            torch.from_numpy(X).to(dev),
-            torch.from_numpy(y_cls.astype(np.int64)).to(dev),
-            torch.from_numpy(y_mag).to(dev),
-            torch.from_numpy(y_tp).to(dev),
-            torch.from_numpy(y_sl).to(dev),
+        """Create DataLoader using lazy SequenceDataset (no RAM copy)."""
+        dataset = SequenceDataset(
+            feat, y_cls, y_mag, y_tp, y_sl,
+            lookback=self.lookback, start=start, end=end,
         )
         return DataLoader(
             dataset,
@@ -244,20 +290,22 @@ class WalkForwardTrainer:
         Returns:
             Dict with backtest results
         """
-        X_all, y_cls_all, y_mag_all, y_tp_all, y_sl_all = self._prepare_data(df)
-        input_dim = X_all.shape[2]
-        total = len(X_all)
+        feat, y_cls, y_mag, y_tp, y_sl, input_dim = self._prepare_data(df)
+        # Total valid samples = len(feat) - lookback + 1
+        # But labels are aligned: y[lookback-1] is the first valid label
+        total = len(feat) - self.lookback + 1
 
         split = int(total * train_pct)
         val_size = int(split * val_pct)
         train_end = split - val_size
 
-        # Compute class weights from training labels to handle imbalance
-        train_labels = y_cls_all[:train_end]
+        # Compute class weights from training labels
+        # Labels index: lookback-1 to lookback-1+train_end
+        lb = self.lookback - 1
+        train_labels = y_cls[lb:lb + train_end].cpu().numpy()
         counts = np.bincount(train_labels.astype(int), minlength=3).astype(np.float32)
         print(f"\n  Label distribution (train): {dict(enumerate(counts.astype(int)))}")
-        # Inverse frequency weighting
-        counts = np.maximum(counts, 1.0)  # avoid div by zero
+        counts = np.maximum(counts, 1.0)
         class_weights = (1.0 / counts) * counts.sum() / len(counts)
         class_weights_t = torch.from_numpy(class_weights).to(self.device)
         print(f"  Class weights: {class_weights}")
@@ -267,20 +315,12 @@ class WalkForwardTrainer:
         print(f"  {train_end} train / {val_size} val / {total - split} backtest bars")
         print(f"{'='*60}")
 
-        train_loader = self._make_loader(
-            X_all[:train_end], y_cls_all[:train_end], y_mag_all[:train_end],
-            y_tp_all[:train_end], y_sl_all[:train_end],
-        )
-        val_loader = self._make_loader(
-            X_all[train_end:split], y_cls_all[train_end:split], y_mag_all[train_end:split],
-            y_tp_all[train_end:split], y_sl_all[train_end:split],
-            shuffle=False,
-        )
-        test_loader = self._make_loader(
-            X_all[split:], y_cls_all[split:], y_mag_all[split:],
-            y_tp_all[split:], y_sl_all[split:],
-            shuffle=False,
-        )
+        train_loader = self._make_loader(feat, y_cls, y_mag, y_tp, y_sl,
+                                         start=0, end=train_end)
+        val_loader = self._make_loader(feat, y_cls, y_mag, y_tp, y_sl,
+                                       start=train_end, end=split, shuffle=False)
+        test_loader = self._make_loader(feat, y_cls, y_mag, y_tp, y_sl,
+                                        start=split, end=total, shuffle=False)
 
         model = self._build_model(input_dim)
         optimizer = torch.optim.AdamW(model.parameters(), lr=self.lr, weight_decay=1e-4)
@@ -397,16 +437,16 @@ class WalkForwardTrainer:
         print(f"  Resuming from epoch {prev_epoch + 1}, best_val_loss={prev_best_val:.4f}")
         print(f"  Training {extra_epochs} additional epochs")
 
-        X_all, y_cls_all, y_mag_all, y_tp_all, y_sl_all = self._prepare_data(df)
-        input_dim = X_all.shape[2]
-        total = len(X_all)
+        feat, y_cls, y_mag, y_tp, y_sl, input_dim = self._prepare_data(df)
+        total = len(feat) - self.lookback + 1
 
         split = int(total * train_pct)
         val_size = int(split * val_pct)
         train_end = split - val_size
 
         # Class weights
-        train_labels = y_cls_all[:train_end]
+        lb = self.lookback - 1
+        train_labels = y_cls[lb:lb + train_end].cpu().numpy()
         counts = np.bincount(train_labels.astype(int), minlength=3).astype(np.float32)
         counts = np.maximum(counts, 1.0)
         class_weights = (1.0 / counts) * counts.sum() / len(counts)
@@ -418,20 +458,12 @@ class WalkForwardTrainer:
         print(f"  {train_end} train / {val_size} val / {total - split} backtest bars")
         print(f"{'='*60}")
 
-        train_loader = self._make_loader(
-            X_all[:train_end], y_cls_all[:train_end], y_mag_all[:train_end],
-            y_tp_all[:train_end], y_sl_all[:train_end],
-        )
-        val_loader = self._make_loader(
-            X_all[train_end:split], y_cls_all[train_end:split], y_mag_all[train_end:split],
-            y_tp_all[train_end:split], y_sl_all[train_end:split],
-            shuffle=False,
-        )
-        test_loader = self._make_loader(
-            X_all[split:], y_cls_all[split:], y_mag_all[split:],
-            y_tp_all[split:], y_sl_all[split:],
-            shuffle=False,
-        )
+        train_loader = self._make_loader(feat, y_cls, y_mag, y_tp, y_sl,
+                                         start=0, end=train_end)
+        val_loader = self._make_loader(feat, y_cls, y_mag, y_tp, y_sl,
+                                       start=train_end, end=split, shuffle=False)
+        test_loader = self._make_loader(feat, y_cls, y_mag, y_tp, y_sl,
+                                        start=split, end=total, shuffle=False)
 
         # Rebuild model and load weights (load into raw model before compile)
         raw_model = NeuralOHLCVNet(
