@@ -24,7 +24,7 @@ class TradingLoss(nn.Module):
     def __init__(
         self,
         cls_weight: float = 1.0,
-        mag_weight: float = 0.1,
+        mag_weight: float = 0.0,
         sortino_weight: float = 0.3,
         confidence_weight: float = 0.3,
         pnl_weight: float = 1.0,
@@ -116,13 +116,15 @@ class TradingLoss(nn.Module):
         # Guard: if total is NaN, fall back to just cls_loss (most numerically stable).
         # Log which component caused it for debugging.
         if torch.isnan(total):
-            components = {
-                "cls_loss": cls_loss, "mag_loss": mag_loss, "sortino": sortino,
-                "conf_loss": conf_loss, "pnl_loss": pnl_loss,
-                "selectivity": selectivity_penalty,
-            }
-            nan_parts = [k for k, v in components.items() if torch.isnan(v)]
-            print(f"  WARNING: NaN in loss components: {nan_parts}")
+            if not hasattr(self, '_nan_warned'):
+                components = {
+                    "cls_loss": cls_loss, "mag_loss": mag_loss, "sortino": sortino,
+                    "conf_loss": conf_loss, "pnl_loss": pnl_loss,
+                    "selectivity": selectivity_penalty,
+                }
+                nan_parts = [k for k, v in components.items() if torch.isnan(v)]
+                print(f"  WARNING: NaN in loss components: {nan_parts}")
+                self._nan_warned = True
             total = cls_loss if not torch.isnan(cls_loss) else torch.zeros(1, device=direction_logits.device, requires_grad=True)
 
         # Accuracy metric (hard, for reporting only)

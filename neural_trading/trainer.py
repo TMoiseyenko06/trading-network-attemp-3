@@ -89,8 +89,9 @@ class WalkForwardTrainer:
         print(f"  Magnitude: mean={labels['magnitude'].mean():.6f} std={labels['magnitude'].std():.6f}")
 
         # Log-transform magnitude to tame heavy tails
+        # Clip to ≥ 0 first — some edge cases in labeling can produce negatives
         labels = labels.copy()
-        labels["magnitude"] = np.log1p(labels["magnitude"])
+        labels["magnitude"] = np.log1p(labels["magnitude"].clip(lower=0))
 
         return build_sequences(features, labels, self.lookback)
 
