@@ -47,8 +47,11 @@ def detect_gpu() -> GPUProfile:
     cc = (props.major, props.minor)
     sms = props.multi_processor_count
 
-    # AMP available on compute capability >= 7.0 (Volta+)
-    use_amp = cc >= (7, 0)
+    # AMP disabled — the model is small enough that float32 is fast,
+    # and float16 causes persistent gradient overflow with the multi-objective
+    # loss (Sortino division, softmax, BCE all produce float16 inf).
+    # TF32 on Ampere+ gives most of the speed benefit without precision loss.
+    use_amp = False
     # TF32 available on Ampere+ (8.0+)
     use_tf32 = cc >= (8, 0)
     # torch.compile works best on Ampere+
