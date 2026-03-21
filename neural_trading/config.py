@@ -24,12 +24,12 @@ class Config:
     val_months: int = 1
     test_months: int = 1
 
-    # Risk (selective high-conviction trading — target 1-5 trades/day)
-    daily_loss_limit: float = -500.0
-    trailing_drawdown_limit: float = -2000.0
-    min_confidence: float = 0.70        # high-conviction only
-    cooldown_bars: int = 5              # longer cooldown between trades
-    consecutive_loss_trigger: int = 3   # tighter loss discipline
+    # Risk (active trading — target 3-10 trades/day, most days)
+    daily_loss_limit: float = -1500.0   # allow ~3 consecutive losses before halt
+    trailing_drawdown_limit: float = -3000.0
+    min_confidence: float = 0.60        # moderate conviction threshold
+    cooldown_bars: int = 5              # cooldown after consecutive losses
+    consecutive_loss_trigger: int = 3   # losses before cooldown activates
     max_position_size: int = 1          # 1 contract until model proves profitable
-    max_trades_per_day: int = 5         # hard cap — 1-5 trades/day max
-    min_bars_between_trades: int = 60   # ~60 min gap between entries on 1-min bars
+    max_trades_per_day: int = 10        # more opportunities per day
+    min_bars_between_trades: int = 15   # ~15 min gap between entries on 1-min bars

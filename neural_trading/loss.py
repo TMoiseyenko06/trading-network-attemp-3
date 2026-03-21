@@ -68,9 +68,9 @@ class TradingLoss(nn.Module):
         # Probabilities for metrics
         probs = F.softmax(direction_logits, dim=1)  # (B, 3)
 
-        # 2. Trade selectivity — target 80-95% flat (1-5 trades/day)
+        # 2. Trade selectivity — target 60-85% flat (3-10 trades/day)
         p_flat_mean = probs[:, 2].mean()
-        selectivity_penalty = F.relu(0.80 - p_flat_mean) + F.relu(p_flat_mean - 0.95)
+        selectivity_penalty = F.relu(0.60 - p_flat_mean) + F.relu(p_flat_mean - 0.85)
 
         total = self.cls_weight * cls_loss + self.frequency_weight * selectivity_penalty
 

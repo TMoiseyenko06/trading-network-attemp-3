@@ -8,17 +8,17 @@ import time
 @dataclass
 class RiskConfig:
     """Risk parameters — these are non-negotiable hard limits."""
-    daily_loss_limit: float = -500.0          # max daily loss in dollars
-    trailing_drawdown_limit: float = -2000.0  # max trailing drawdown
-    min_confidence: float = 0.70              # high-conviction only
+    daily_loss_limit: float = -1500.0         # allow ~3 losses before halt
+    trailing_drawdown_limit: float = -3000.0  # max trailing drawdown
+    min_confidence: float = 0.60              # moderate conviction threshold
     cooldown_bars: int = 5                    # bars to wait after consecutive losses
     consecutive_loss_trigger: int = 3         # losses before cooldown activates
     max_position_size: int = 1                # max contracts — 1 for initial development
     drawdown_scale_start: float = 0.5         # start scaling at 50% of drawdown limit
     min_rr_ratio: float = 1.5                 # minimum R:R — only take trades with edge
     no_halt: bool = False                     # disable circuit breakers for diagnostics
-    max_trades_per_day: int = 5               # hard cap — 1-5 trades/day
-    min_bars_between_trades: int = 60         # minimum bars between entries (~60 min on 1-min)
+    max_trades_per_day: int = 10              # more opportunities per day
+    min_bars_between_trades: int = 15         # ~15 min gap between entries
 
 
 @dataclass
