@@ -89,10 +89,11 @@ class TradingLoss(nn.Module):
             confidence, soft_correct.detach(),
         )
 
-        # 5. Direct P&L maximization using fixed R:R
-        #    Reward correct direction + penalize trading on low-probability setups
+        # 5. Direct P&L maximization using normalized R:R
+        #    Uses ratio (not raw points) so values stay in [-1, +rr_ratio] range,
+        #    preventing float16 overflow under AMP
         p_trade = 1.0 - probs[:, 2]  # probability of NOT predicting flat
-        expected_pnl = soft_correct * self.tp_points - (1.0 - soft_correct) * self.sl_points
+        expected_pnl = soft_correct * rr_ratio - (1.0 - soft_correct) * 1.0
         weighted_pnl = expected_pnl * p_trade
         pnl_loss = -weighted_pnl.mean()
 
