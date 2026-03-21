@@ -28,7 +28,7 @@ class TradingLoss(nn.Module):
         sortino_weight: float = 0.3,
         confidence_weight: float = 0.3,
         pnl_weight: float = 1.0,
-        frequency_weight: float = 0.5,
+        frequency_weight: float = 3.0,
         tp_points: float = 35.0,
         sl_points: float = 20.0,
         class_weights: torch.Tensor | None = None,
@@ -94,10 +94,12 @@ class TradingLoss(nn.Module):
         # 5. Direct P&L maximization using normalized R:R
         #    Uses ratio (not raw points) so values stay in [-1, +rr_ratio] range,
         #    preventing float16 overflow under AMP
+        #    Normalized by trade volume so model isn't rewarded for trading MORE,
+        #    only for being RIGHT when it trades
         p_trade = 1.0 - probs[:, 2]  # probability of NOT predicting flat
         expected_pnl = soft_correct * rr_ratio - (1.0 - soft_correct) * 1.0
         weighted_pnl = expected_pnl * p_trade
-        pnl_loss = -weighted_pnl.mean()
+        pnl_loss = -(weighted_pnl.sum() / (p_trade.sum() + 1e-6))
 
         # 6. Trade selectivity — model should be highly selective (1-5 trades/day)
         #    Target: flat 80-95% of the time (only trade high-conviction setups)
