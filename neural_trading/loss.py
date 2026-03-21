@@ -4,8 +4,9 @@ The model only predicts direction (LONG/SHORT/FLAT) + confidence.
 TP/SL are hard-coded (35pt TP, 20pt SL). With 55%+ win rate, the
 fixed R:R of 1.75 guarantees profit factor > 2.0.
 
-Loss = cross-entropy (direction accuracy) + selectivity (trade frequency).
-That's it. Win rate + fixed R:R = guaranteed P&L.
+Loss = cross-entropy only. Trade frequency is handled by the risk
+manager (confidence threshold, max trades/day, bar gap). The loss
+should focus 100% on getting direction right.
 """
 
 import torch
@@ -14,14 +15,10 @@ import torch.nn.functional as F
 
 
 class TradingLoss(nn.Module):
-    """Simplified loss for fixed TP/SL regime.
+    """Pure classification loss for fixed TP/SL regime.
 
-    Components:
-        1. Cross-entropy for direction classification — this IS the win rate
-        2. Trade selectivity — penalizes trading too often (target: 1-5/day)
-
-    Everything else (P&L, Sortino, confidence calibration) is redundant
-    when TP/SL are fixed. 55% accuracy × 1.75 R:R = profit.
+    Just cross-entropy. The model learns direction accuracy (= win rate),
+    the risk manager handles trade frequency. No competing objectives.
     """
 
     def __init__(
@@ -61,18 +58,15 @@ class TradingLoss(nn.Module):
         direction_logits = direction_logits.float().clamp(-50, 50)
         confidence = confidence.float().clamp(-50, 50)
 
-        # 1. Classification loss — the core objective
-        #    Higher accuracy = higher win rate = more profit with fixed R:R
+        # Classification loss — the ONLY objective
+        # Higher accuracy = higher win rate = more profit with fixed R:R
         cls_loss = F.cross_entropy(direction_logits, true_labels, weight=self.class_weights)
 
         # Probabilities for metrics
         probs = F.softmax(direction_logits, dim=1)  # (B, 3)
-
-        # 2. Trade selectivity — target 60-85% flat (3-10 trades/day)
         p_flat_mean = probs[:, 2].mean()
-        selectivity_penalty = F.relu(0.60 - p_flat_mean) + F.relu(p_flat_mean - 0.85)
 
-        total = self.cls_weight * cls_loss + self.frequency_weight * selectivity_penalty
+        total = self.cls_weight * cls_loss
 
         # NaN guard
         if torch.isnan(total):
