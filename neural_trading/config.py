@@ -26,8 +26,7 @@ class Config:
 
     # Risk (active trading — target 3-10 trades/day, most days)
     daily_loss_limit: float = -1500.0   # allow ~3 consecutive losses before halt
-    trailing_drawdown_limit: float = -3000.0
-    min_confidence: float = 0.60        # moderate conviction threshold
+    min_confidence: float = 0.72        # higher conviction — filter weak signals
     cooldown_bars: int = 5              # cooldown after consecutive losses
     consecutive_loss_trigger: int = 3   # losses before cooldown activates
     max_position_size: int = 1          # 1 contract until model proves profitable

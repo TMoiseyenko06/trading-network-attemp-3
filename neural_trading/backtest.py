@@ -303,6 +303,16 @@ class Backtester:
             if i < self.lookback:
                 continue
 
+            # Time-of-day filter: skip first/last 30 min of RTH (9:30-10:00, 15:30-16:00 ET)
+            if isinstance(ts, pd.Timestamp):
+                t = ts.time()
+                # Convert to ET if needed (data may be UTC — 9:30 ET = 13:30 UTC, 16:00 ET = 20:00 UTC)
+                hour_min = t.hour * 60 + t.minute
+                # Skip 13:30-14:00 UTC (9:30-10:00 ET) and 19:30-20:00 UTC (15:30-16:00 ET)
+                if (810 <= hour_min <= 840) or (1170 <= hour_min <= 1200):
+                    skipped["flat"] += 1
+                    continue
+
             # Get prediction
             window = feat_values[i - self.lookback + 1:i + 1]
             if len(window) < self.lookback:

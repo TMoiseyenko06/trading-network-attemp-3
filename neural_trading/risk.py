@@ -10,7 +10,7 @@ class RiskConfig:
     """Risk parameters — these are non-negotiable hard limits."""
     daily_loss_limit: float = -1500.0         # allow ~3 losses before halt
     trailing_drawdown_limit: float = -3000.0  # max trailing drawdown
-    min_confidence: float = 0.60              # moderate conviction threshold
+    min_confidence: float = 0.72              # higher conviction — filter weak signals
     cooldown_bars: int = 5                    # bars to wait after consecutive losses
     consecutive_loss_trigger: int = 3         # losses before cooldown activates
     max_position_size: int = 1                # max contracts — 1 for initial development
@@ -65,15 +65,11 @@ class RiskManager:
         """
         # Circuit breakers (skipped with --no-halt)
         if not self.config.no_halt:
+            # Daily loss limit — resets each day via reset_daily()
             if self.state.daily_pnl <= self.config.daily_loss_limit:
                 self.state.is_halted = True
                 self.state.halt_reason = "daily_loss_limit"
                 return False, 0, "Daily loss limit reached"
-
-            if self.state.trailing_drawdown <= self.config.trailing_drawdown_limit:
-                self.state.is_halted = True
-                self.state.halt_reason = "trailing_drawdown"
-                return False, 0, "Trailing drawdown limit reached"
 
             if self.state.is_halted:
                 return False, 0, f"Trading halted: {self.state.halt_reason}"
