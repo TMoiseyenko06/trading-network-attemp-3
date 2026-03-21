@@ -12,6 +12,10 @@ class Config:
     max_bars: int = 20                  # forward window for labeling — 20 min gives room for real moves
     vol_window: int = 20                # rolling window for volume z-score
 
+    # Fixed TP/SL (hard rules — not predicted by the network)
+    fixed_tp_points: float = 35.0       # take-profit in index points
+    fixed_sl_points: float = 20.0       # stop-loss in index points
+
     # Training
     lr: float = 1e-3
     epochs_per_fold: int = 100
@@ -20,12 +24,12 @@ class Config:
     val_months: int = 1
     test_months: int = 1
 
-    # Risk (selective high-conviction trading — target 2-10 trades/day)
+    # Risk (selective high-conviction trading — target 1-5 trades/day)
     daily_loss_limit: float = -500.0
     trailing_drawdown_limit: float = -2000.0
     min_confidence: float = 0.70        # high-conviction only
     cooldown_bars: int = 5              # longer cooldown between trades
     consecutive_loss_trigger: int = 3   # tighter loss discipline
     max_position_size: int = 1          # 1 contract until model proves profitable
-    max_trades_per_day: int = 10        # hard cap on daily trade count
-    min_bars_between_trades: int = 30   # ~30 min gap between entries on 1-min bars
+    max_trades_per_day: int = 5         # hard cap — 1-5 trades/day max
+    min_bars_between_trades: int = 60   # ~60 min gap between entries on 1-min bars

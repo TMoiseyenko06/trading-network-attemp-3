@@ -12,7 +12,7 @@ import sys
 from .model import NeuralOHLCVNet
 from .loss import TradingLoss
 from .gpu import GPUProfile, detect_gpu, scale_dim
-from .preprocessing import compute_features, add_time_features, dynamic_barrier_labels, build_sequences
+from .preprocessing import compute_features, add_time_features, fixed_barrier_labels, build_sequences
 
 
 class WalkForwardTrainer:
@@ -26,6 +26,8 @@ class WalkForwardTrainer:
         lr: float = 1e-3,
         epochs_per_fold: int = 100,
         patience: int = 7,
+        tp_points: float = 35.0,
+        sl_points: float = 20.0,
     ):
         self.gpu = gpu_profile or detect_gpu()
         self.lookback = lookback
@@ -33,6 +35,8 @@ class WalkForwardTrainer:
         self.lr = lr
         self.epochs_per_fold = epochs_per_fold
         self.patience = patience
+        self.tp_points = tp_points
+        self.sl_points = sl_points
 
         # Scale model dimensions based on GPU
         self.hidden_dim = scale_dim(64, self.gpu.model_scale)
@@ -48,7 +52,11 @@ class WalkForwardTrainer:
         """Preprocess raw OHLCV dataframe into sequences."""
         features = compute_features(df)
         features = add_time_features(features)
-        labels = dynamic_barrier_labels(df["close"], df["high"], df["low"], self.max_bars)
+        labels = fixed_barrier_labels(
+            df["close"], df["high"], df["low"],
+            tp_points=self.tp_points, sl_points=self.sl_points,
+            max_bars=self.max_bars,
+        )
 
         # Drop initial NaN rows
         valid_start = features.first_valid_index()
@@ -81,19 +89,8 @@ class WalkForwardTrainer:
         print(f"  Magnitude: mean={labels['magnitude'].mean():.6f} std={labels['magnitude'].std():.6f}")
 
         # Log-transform magnitude to tame heavy tails
-        # (raw magnitudes have mean=137, std=2855 which blows up MSE in float16)
         labels = labels.copy()
         labels["magnitude"] = np.log1p(labels["magnitude"])
-        # TP/SL targets: clip to model's output range so the loss doesn't chase
-        # extreme MFE/MAE values the model can never output anyway
-        from .model import DecisionHead
-        if "target_tp" in labels.columns:
-            labels["target_tp"] = labels["target_tp"].clip(
-                DecisionHead.MIN_TP_PCT, DecisionHead.MAX_TP_PCT,
-            )
-            labels["target_sl"] = labels["target_sl"].clip(
-                DecisionHead.MIN_SL_PCT, DecisionHead.MAX_SL_PCT,
-            )
 
         return build_sequences(features, labels, self.lookback)
 
@@ -272,7 +269,11 @@ class WalkForwardTrainer:
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=self.epochs_per_fold,
         )
-        criterion = TradingLoss(class_weights=class_weights_t)
+        criterion = TradingLoss(
+            class_weights=class_weights_t,
+            tp_points=self.tp_points,
+            sl_points=self.sl_points,
+        )
         # Conservative initial scale — default 65536 causes scaled_loss to overflow
         # float16 max (65504) when loss > 1.0, producing inf gradients that make
         # scaler.step() skip EVERY optimizer step → model never learns.
@@ -298,7 +299,6 @@ class WalkForwardTrainer:
                 patience_counter += 1
 
             gnorm = train_m.get("grad_norm", 0)
-            rr = val_m.get("rr_ratio", 0)
             pnl = val_m.get("pnl", 0)
             flat = val_m.get("flat_rate", 0)
             trade_acc = val_m.get("trade_acc", 0)
@@ -309,8 +309,8 @@ class WalkForwardTrainer:
             print(
                 f"  Epoch {epoch:3d} | "
                 f"val_acc={val_m['accuracy']:.3f} trade_acc={trade_acc:.3f} | "
-                f"loss={val_m['cls_loss']:.4f} pnl={pnl:.5f} sortino={val_m['sortino']:.3f} "
-                f"R:R={rr:.2f} flat={flat:.0%} conf={avg_conf:.2f} | "
+                f"loss={val_m['cls_loss']:.4f} pnl={pnl:.1f} sortino={val_m['sortino']:.3f} "
+                f"flat={flat:.0%} conf={avg_conf:.2f} | "
                 f"gnorm={gnorm:.4f}{skip_info} | {elapsed:.1f}s"
             )
 
@@ -326,13 +326,16 @@ class WalkForwardTrainer:
         test_flat = test_m.get("flat_rate", 0)
         test_trade_acc = test_m.get("trade_acc", 0)
         print(f"\n  BACKTEST | acc={test_m['accuracy']:.3f} trade_acc={test_trade_acc:.3f} "
-              f"pnl={test_pnl:.5f} sortino={test_m['sortino']:.3f} flat={test_flat:.0%}")
+              f"pnl={test_pnl:.1f} sortino={test_m['sortino']:.3f} flat={test_flat:.0%}")
 
         torch.save(
             {"model_state": best_state, "hidden_dim": self.hidden_dim,
              "input_dim": input_dim, "test_metrics": test_m,
              "feat_mean": self._feat_mean.to_dict(),
              "feat_std": self._feat_std.to_dict(),
+             # Fixed TP/SL points
+             "tp_points": self.tp_points,
+             "sl_points": self.sl_points,
              # Resume support
              "optimizer_state": optimizer.state_dict(),
              "scheduler_state": scheduler.state_dict(),
@@ -439,7 +442,11 @@ class WalkForwardTrainer:
             optimizer, T_max=extra_epochs,
         )
 
-        criterion = TradingLoss(class_weights=class_weights_t)
+        criterion = TradingLoss(
+            class_weights=class_weights_t,
+            tp_points=self.tp_points,
+            sl_points=self.sl_points,
+        )
         scaler = torch.amp.GradScaler("cuda", init_scale=128) if self.gpu.use_amp else None
         if scaler is not None and checkpoint.get("scaler_state") is not None:
             scaler.load_state_dict(checkpoint["scaler_state"])
@@ -466,7 +473,6 @@ class WalkForwardTrainer:
                 patience_counter += 1
 
             gnorm = train_m.get("grad_norm", 0)
-            rr = val_m.get("rr_ratio", 0)
             pnl = val_m.get("pnl", 0)
             flat = val_m.get("flat_rate", 0)
             trade_acc = val_m.get("trade_acc", 0)
@@ -477,8 +483,8 @@ class WalkForwardTrainer:
             print(
                 f"  Epoch {epoch:3d} | "
                 f"val_acc={val_m['accuracy']:.3f} trade_acc={trade_acc:.3f} | "
-                f"loss={val_m['cls_loss']:.4f} pnl={pnl:.5f} sortino={val_m['sortino']:.3f} "
-                f"R:R={rr:.2f} flat={flat:.0%} conf={avg_conf:.2f} | "
+                f"loss={val_m['cls_loss']:.4f} pnl={pnl:.1f} sortino={val_m['sortino']:.3f} "
+                f"flat={flat:.0%} conf={avg_conf:.2f} | "
                 f"gnorm={gnorm:.4f}{skip_info} | {elapsed:.1f}s"
             )
 
@@ -494,7 +500,7 @@ class WalkForwardTrainer:
         test_flat = test_m.get("flat_rate", 0)
         test_trade_acc = test_m.get("trade_acc", 0)
         print(f"\n  BACKTEST | acc={test_m['accuracy']:.3f} trade_acc={test_trade_acc:.3f} "
-              f"pnl={test_pnl:.5f} sortino={test_m['sortino']:.3f} flat={test_flat:.0%}")
+              f"pnl={test_pnl:.1f} sortino={test_m['sortino']:.3f} flat={test_flat:.0%}")
 
         torch.save(
             {"model_state": best_state, "hidden_dim": self.hidden_dim,

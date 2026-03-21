@@ -85,16 +85,16 @@ class Backtester:
         max_bars_in_trade: int = 20,
         risk_config: Optional[RiskConfig] = None,
         lookback: int = 90,
-        max_sl_points: float = 100.0,    # hard cap on stop-loss distance in points
-        max_tp_points: float = 300.0,    # hard cap on take-profit distance in points
+        fixed_tp_points: float = 35.0,   # fixed take-profit in points
+        fixed_sl_points: float = 20.0,   # fixed stop-loss in points
     ):
         self.point_value = point_value
         self.starting_equity = starting_equity
         self.commission = commission_per_contract
         self.max_bars_in_trade = max_bars_in_trade
         self.lookback = lookback
-        self.max_sl_points = max_sl_points
-        self.max_tp_points = max_tp_points
+        self.fixed_tp_points = fixed_tp_points
+        self.fixed_sl_points = fixed_sl_points
 
         self.gpu = detect_gpu()
         self.device = self.gpu.device
@@ -153,27 +153,16 @@ class Backtester:
         entry_idx: int,
         direction: str,
         entry_price: float,
-        tp_pct: float,
-        sl_pct: float,
         size: int,
         confidence: float,
     ) -> Trade:
-        """Simulate a trade forward from entry bar using high/low prices."""
+        """Simulate a trade forward from entry bar using fixed point TP/SL."""
         if direction == "LONG":
-            tp_price = entry_price * (1 + tp_pct)
-            sl_price = entry_price * (1 - sl_pct)
-            # Hard cap: max 50 points on both TP and SL
-            if tp_price - entry_price > self.max_tp_points:
-                tp_price = entry_price + self.max_tp_points
-            if entry_price - sl_price > self.max_sl_points:
-                sl_price = entry_price - self.max_sl_points
+            tp_price = entry_price + self.fixed_tp_points
+            sl_price = entry_price - self.fixed_sl_points
         else:
-            tp_price = entry_price * (1 - tp_pct)
-            sl_price = entry_price * (1 + sl_pct)
-            if entry_price - tp_price > self.max_tp_points:
-                tp_price = entry_price - self.max_tp_points
-            if sl_price - entry_price > self.max_sl_points:
-                sl_price = entry_price + self.max_sl_points
+            tp_price = entry_price - self.fixed_tp_points
+            sl_price = entry_price + self.fixed_sl_points
 
         exit_bar = entry_idx
         exit_price = entry_price
@@ -279,6 +268,9 @@ class Backtester:
         print(f"  Date range: {df.index[test_start]} -> {df.index[-1]}")
         print(f"  Starting equity: ${self.starting_equity:,.2f}")
         print(f"  Point value: ${self.point_value}")
+        print(f"  Fixed TP: {self.fixed_tp_points} pts (${self.fixed_tp_points * self.point_value})")
+        print(f"  Fixed SL: {self.fixed_sl_points} pts (${self.fixed_sl_points * self.point_value})")
+        print(f"  R:R: {self.fixed_tp_points / self.fixed_sl_points:.2f}")
         print(f"  Commission: ${self.commission}/contract round-trip")
         print()
 
@@ -289,8 +281,6 @@ class Backtester:
         current_trade_exit_bar = 0
         current_day = None
         skipped = {"flat": 0, "low_conf": 0, "risk_rr": 0, "risk_halted": 0, "risk_cooldown": 0, "max_trades": 0, "bar_gap": 0, "risk_other": 0}
-        # Diagnostic: sample TP/SL/RR from first 1000 non-flat predictions
-        _diag_rrs = []
 
         for i in range(test_start, total_bars - 1):
             # Reset daily stats at day boundaries
@@ -322,8 +312,6 @@ class Backtester:
 
             direction_idx = pred["direction"]
             confidence = pred["confidence"]
-            tp_pct = pred["tp_pct"]
-            sl_pct = pred["sl_pct"]
 
             # Map direction
             if direction_idx == 0:
@@ -334,13 +322,14 @@ class Backtester:
                 skipped["flat"] += 1
                 continue
 
-            # Diagnostic: capture R:R distribution
-            if len(_diag_rrs) < 1000 and sl_pct > 0:
-                _diag_rrs.append((tp_pct, sl_pct, tp_pct / sl_pct, confidence))
+            # Use fixed TP/SL as pct for risk check (R:R is always 1.75)
+            entry_approx = df["close"].iloc[i]
+            tp_pct_approx = self.fixed_tp_points / entry_approx
+            sl_pct_approx = self.fixed_sl_points / entry_approx
 
             # Risk check
             allowed, size, reason = self.risk_mgr.check_trade(
-                confidence, direction_idx, tp_pct, sl_pct,
+                confidence, direction_idx, tp_pct_approx, sl_pct_approx,
                 current_bar=i,
             )
             if not allowed:
@@ -368,7 +357,7 @@ class Backtester:
 
             trade = self._resolve_trade(
                 df, entry_idx, direction, entry_price,
-                tp_pct, sl_pct, size, confidence,
+                size, confidence,
             )
             trades.append(trade)
 
@@ -391,20 +380,6 @@ class Backtester:
         print(f"  Signals skipped: flat={skipped['flat']} low_conf={skipped['low_conf']} "
               f"rr={skipped['risk_rr']} halted={skipped['risk_halted']} cooldown={skipped['risk_cooldown']} "
               f"max_trades={skipped['max_trades']} bar_gap={skipped['bar_gap']} other={skipped['risk_other']}")
-
-        # Print TP/SL diagnostic
-        if _diag_rrs:
-            import statistics
-            tps = [x[0] for x in _diag_rrs]
-            sls = [x[1] for x in _diag_rrs]
-            rrs = [x[2] for x in _diag_rrs]
-            confs = [x[3] for x in _diag_rrs]
-            print(f"\n  TP/SL Diagnostic (first {len(_diag_rrs)} non-flat signals):")
-            print(f"    TP  — min={min(tps):.6f} median={statistics.median(tps):.6f} max={max(tps):.6f}")
-            print(f"    SL  — min={min(sls):.6f} median={statistics.median(sls):.6f} max={max(sls):.6f}")
-            print(f"    R:R — min={min(rrs):.4f} median={statistics.median(rrs):.4f} max={max(rrs):.4f}")
-            print(f"    Conf— min={min(confs):.4f} median={statistics.median(confs):.4f} max={max(confs):.4f}")
-            print(f"    R:R >= 1.5: {sum(1 for r in rrs if r >= 1.5)}/{len(rrs)} ({100*sum(1 for r in rrs if r >= 1.5)/len(rrs):.1f}%)")
 
         result = self._compute_stats(trades, equity_curve, equity)
         self._print_report(result)

@@ -17,8 +17,8 @@ class RiskConfig:
     drawdown_scale_start: float = 0.5         # start scaling at 50% of drawdown limit
     min_rr_ratio: float = 1.5                 # minimum R:R — only take trades with edge
     no_halt: bool = False                     # disable circuit breakers for diagnostics
-    max_trades_per_day: int = 10              # hard cap on daily trade count
-    min_bars_between_trades: int = 30         # minimum bars between entries (~30 min on 1-min)
+    max_trades_per_day: int = 5               # hard cap — 1-5 trades/day
+    min_bars_between_trades: int = 60         # minimum bars between entries (~60 min on 1-min)
 
 
 @dataclass

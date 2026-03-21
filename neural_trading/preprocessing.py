@@ -176,6 +176,93 @@ def dynamic_barrier_labels(
     )
 
 
+def fixed_barrier_labels(
+    close: pd.Series,
+    high: pd.Series,
+    low: pd.Series,
+    tp_points: float = 35.0,
+    sl_points: float = 20.0,
+    max_bars: int = 20,
+) -> pd.DataFrame:
+    """Compute labels using fixed point-based TP/SL barriers.
+
+    For each bar, independently simulates a LONG and SHORT trade:
+      - LONG: TP at entry + tp_points, SL at entry - sl_points
+      - SHORT: TP at entry - tp_points, SL at entry + sl_points
+
+    Labels based on which direction's TP gets hit first within max_bars.
+    If neither TP is hit (only SLs or timeout) → flat.
+
+    Returns:
+        DataFrame with columns: label, magnitude
+    """
+    closes = close.values
+    highs = high.values
+    lows = low.values
+    n = len(closes)
+
+    labels = np.full(n, 2, dtype=np.int64)
+    magnitudes = np.zeros(n, dtype=np.float64)
+
+    for i in range(n):
+        entry = closes[i]
+        if entry == 0:
+            continue
+
+        long_tp = entry + tp_points
+        long_sl = entry - sl_points
+        short_tp = entry - tp_points
+        short_sl = entry + sl_points
+
+        long_outcome = 0   # 0=pending, 1=tp_hit, -1=sl_hit
+        short_outcome = 0
+        long_hit_bar = max_bars + 1
+        short_hit_bar = max_bars + 1
+
+        end = min(i + max_bars + 1, n)
+        for j in range(1, end - i):
+            h = highs[i + j]
+            l = lows[i + j]
+
+            # LONG trade resolution (check SL first — conservative)
+            if long_outcome == 0:
+                if l <= long_sl:
+                    long_outcome = -1
+                    long_hit_bar = j
+                elif h >= long_tp:
+                    long_outcome = 1
+                    long_hit_bar = j
+
+            # SHORT trade resolution (check SL first — conservative)
+            if short_outcome == 0:
+                if h >= short_sl:
+                    short_outcome = -1
+                    short_hit_bar = j
+                elif l <= short_tp:
+                    short_outcome = 1
+                    short_hit_bar = j
+
+            if long_outcome != 0 and short_outcome != 0:
+                break
+
+        # Assign label: whichever direction's TP hit first
+        if long_outcome == 1 and (short_outcome != 1 or long_hit_bar <= short_hit_bar):
+            labels[i] = 0  # LONG
+            magnitudes[i] = tp_points / entry
+        elif short_outcome == 1 and (long_outcome != 1 or short_hit_bar < long_hit_bar):
+            labels[i] = 1  # SHORT
+            magnitudes[i] = tp_points / entry
+        else:
+            labels[i] = 2  # FLAT — neither TP hit
+            final_ret = abs(closes[min(i + max_bars, n - 1)] - entry) / entry
+            magnitudes[i] = final_ret
+
+    return pd.DataFrame(
+        {"label": labels, "magnitude": magnitudes},
+        index=close.index,
+    )
+
+
 def build_sequences(
     features: pd.DataFrame,
     labels: pd.DataFrame,

@@ -105,6 +105,10 @@ class LiveTrader:
             vol_window=self.config.vol_window,
         )
 
+        # Fixed TP/SL from config
+        self.fixed_tp_points = self.config.fixed_tp_points
+        self.fixed_sl_points = self.config.fixed_sl_points
+
         # Risk manager
         self.risk_mgr = RiskManager(
             RiskConfig(
@@ -114,6 +118,8 @@ class LiveTrader:
                 cooldown_bars=self.config.cooldown_bars,
                 consecutive_loss_trigger=self.config.consecutive_loss_trigger,
                 max_position_size=self.config.max_position_size,
+                max_trades_per_day=self.config.max_trades_per_day,
+                min_bars_between_trades=self.config.min_bars_between_trades,
             )
         )
 
@@ -215,24 +221,13 @@ class LiveTrader:
         probs = torch.softmax(dir_logits, dim=1).cpu().numpy()[0]
         conf = torch.sigmoid(confidence).cpu().item()
         mag = magnitude.cpu().item()
-        tp = pred_tp.cpu().item()
-        sl = pred_sl.cpu().item()
         direction = int(dir_logits.argmax(dim=1).cpu().item())
-
-        # The model already enforces [MIN_TP, MAX_TP] bounds via sigmoid scaling,
-        # but apply a safety floor here too in case of checkpoint mismatch
-        from .model import DecisionHead
-        tp = max(tp, DecisionHead.MIN_TP_PCT)
-        sl = min(sl, DecisionHead.MAX_SL_PCT)
-        sl = max(sl, DecisionHead.MIN_SL_PCT)
 
         return {
             "direction": direction,
             "probs": probs,
             "confidence": conf,
             "magnitude": mag,
-            "tp_pct": tp,
-            "sl_pct": sl,
         }
 
     def _handle_signal(self, signal: dict, ts: datetime, close_price: float = 0) -> None:
@@ -243,9 +238,13 @@ class LiveTrader:
         labels = ["LONG", "SHORT", "FLAT"]
         last_close = self.buffer.last_close
 
-        # Check with risk manager (pass TP/SL for R:R filtering)
+        # Use fixed TP/SL as pct for risk check
+        tp_pct = self.fixed_tp_points / last_close if last_close > 0 else 0
+        sl_pct = self.fixed_sl_points / last_close if last_close > 0 else 0
+
+        # Check with risk manager
         allowed, size, reason = self.risk_mgr.check_trade(
-            conf, direction, signal["tp_pct"], signal["sl_pct"],
+            conf, direction, tp_pct, sl_pct,
             current_bar=self._signal_count,
         )
 
@@ -261,18 +260,21 @@ class LiveTrader:
         prob_str = f"W={probs[0]:.2f} L={probs[1]:.2f} F={probs[2]:.2f}"
 
         if allowed:
-            tp_price = last_close * (1 + signal["tp_pct"])
-            sl_price = last_close * (1 - signal["sl_pct"])
-            tp_pts = abs(tp_price - last_close)
-            sl_pts = abs(sl_price - last_close)
-            rr = tp_pts / sl_pts if sl_pts > 0 else 0
+            if direction == 0:  # LONG
+                tp_price = last_close + self.fixed_tp_points
+                sl_price = last_close - self.fixed_sl_points
+            else:  # SHORT
+                tp_price = last_close - self.fixed_tp_points
+                sl_price = last_close + self.fixed_sl_points
+            rr = self.fixed_tp_points / self.fixed_sl_points
 
             print(
                 f"  [{ts_str}] #{self._signal_count:4d} "
                 f"{dir_label:5s} x{size} @ {last_close:.2f} | "
                 f"conf={conf:.2f} ({prob_str}) | "
-                f"TP={tp_price:.2f}(+{tp_pts:.1f}pt) SL={sl_price:.2f}(-{sl_pts:.1f}pt) "
-                f"R:R={rr:.1f} | mag={signal['magnitude']:.4f}"
+                f"TP={tp_price:.2f}(+{self.fixed_tp_points:.0f}pt) "
+                f"SL={sl_price:.2f}(-{self.fixed_sl_points:.0f}pt) "
+                f"R:R={rr:.1f}"
             )
 
             if self.paper:
@@ -280,8 +282,8 @@ class LiveTrader:
                     "direction": direction,
                     "entry_price": last_close,
                     "size": size,
-                    "tp_pct": signal["tp_pct"],
-                    "sl_pct": signal["sl_pct"],
+                    "tp_points": self.fixed_tp_points,
+                    "sl_points": self.fixed_sl_points,
                     "entry_time": ts,
                     "bars_held": 0,
                 }
@@ -309,8 +311,8 @@ class LiveTrader:
             "probs_lose": probs[1],
             "probs_flat": probs[2],
             "magnitude": signal["magnitude"],
-            "tp_pct": signal["tp_pct"],
-            "sl_pct": signal["sl_pct"],
+            "tp_points": self.fixed_tp_points,
+            "sl_points": self.fixed_sl_points,
             "price": last_close,
             "allowed": allowed,
             "size": size if allowed else 0,
@@ -325,20 +327,22 @@ class LiveTrader:
 
         pos["bars_held"] += 1
         entry = pos["entry_price"]
+        tp_pts = pos["tp_points"]
+        sl_pts = pos["sl_points"]
 
         if pos["direction"] == 0:  # LONG
-            ret = (current_price - entry) / entry
-            hit_tp = ret >= pos["tp_pct"]
-            hit_sl = ret <= -pos["sl_pct"]
+            price_diff = current_price - entry
+            hit_tp = price_diff >= tp_pts
+            hit_sl = price_diff <= -sl_pts
         else:  # SHORT
-            ret = (entry - current_price) / entry
-            hit_tp = ret >= pos["tp_pct"]
-            hit_sl = ret <= -pos["sl_pct"]
+            price_diff = entry - current_price
+            hit_tp = price_diff >= tp_pts
+            hit_sl = price_diff <= -sl_pts
 
         # Check barriers or timeout
         if hit_tp or hit_sl or pos["bars_held"] >= self.config.max_bars:
-            # Estimate PnL (simplified: per contract, point value varies by instrument)
-            pnl = ret * pos["size"] * 1000  # rough NQ point value
+            # P&L in dollars (NQ: $20/point)
+            pnl = price_diff * pos["size"] * 20.0
             self.risk_mgr.record_trade_result(pnl, entry_bar=self._signal_count)
 
             result = "TP" if hit_tp else ("SL" if hit_sl else "TIMEOUT")

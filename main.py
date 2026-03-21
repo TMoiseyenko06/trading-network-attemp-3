@@ -84,6 +84,8 @@ def train(args: argparse.Namespace) -> None:
         lr=config.lr,
         epochs_per_fold=args.extra_epochs if args.resume else config.epochs_per_fold,
         patience=config.patience,
+        tp_points=config.fixed_tp_points,
+        sl_points=config.fixed_sl_points,
     )
 
     if args.resume:
@@ -196,6 +198,8 @@ def backtest(args: argparse.Namespace) -> None:
         max_bars_in_trade=config.max_bars,
         risk_config=risk_cfg,
         lookback=config.lookback,
+        fixed_tp_points=config.fixed_tp_points,
+        fixed_sl_points=config.fixed_sl_points,
     )
 
     df = load_ohlcv(args.data)
