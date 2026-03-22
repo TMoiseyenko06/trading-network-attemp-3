@@ -2,6 +2,8 @@
 
 import warnings
 import os
+from dotenv import load_dotenv
+load_dotenv()
 warnings.filterwarnings("ignore", message=".*torch.jit.script_method.*")
 warnings.filterwarnings("ignore", message=".*use of fork\\(\\) may lead to deadlocks.*")
 os.environ.setdefault("PYTHONWARNINGS", "ignore::DeprecationWarning")
