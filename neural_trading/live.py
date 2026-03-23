@@ -366,36 +366,57 @@ class LiveTrader:
         print(f"  Buffer needs: {self.buffer.min_bars} bars before first signal")
         print(f"{'='*60}\n")
 
-        live_client = db.Live(key=self.api_key)
+        max_retries = 10
+        base_delay = 2  # seconds
+        retries = 0
 
-        live_client.subscribe(
-            dataset=self.dataset,
-            schema=self.schema,
-            stype_in=self.stype_in,
-            symbols=self.symbols,
-        )
-
-        print("  Connecting to Databento live feed...")
         try:
-            print("  Connected! Waiting for bars...\n")
+            while retries <= max_retries:
+                try:
+                    live_client = db.Live(key=self.api_key)
+                    live_client.subscribe(
+                        dataset=self.dataset,
+                        schema=self.schema,
+                        stype_in=self.stype_in,
+                        symbols=self.symbols,
+                    )
 
-            for msg in live_client:
-                if hasattr(msg, "open") and hasattr(msg, "high") and hasattr(msg, "close"):
-                    o = msg.open * self.PRICE_SCALE
-                    h = msg.high * self.PRICE_SCALE
-                    l = msg.low * self.PRICE_SCALE
-                    c = msg.close * self.PRICE_SCALE
-                    v = msg.volume
+                    if retries == 0:
+                        print("  Connecting to Databento live feed...")
+                    else:
+                        print(f"  Reconnecting (attempt {retries}/{max_retries})...")
 
-                    ts = pd.Timestamp(msg.ts_event, unit="ns", tz="UTC")
-                    self._process_bar(ts.to_pydatetime(), o, h, l, c, v)
+                    print("  Connected! Waiting for bars...\n")
+                    retries = 0  # reset on successful connection
 
-                elif hasattr(msg, "err"):
-                    print(f"\n  DATABENTO ERROR: {msg.err}")
-                elif hasattr(msg, "stype_in_symbol"):
-                    print(f"  Symbol mapping: {msg.stype_in_symbol} -> instrument {msg.instrument_id}")
-                elif hasattr(msg, "msg"):
-                    print(f"  DATABENTO SYSTEM: {msg.msg}")
+                    for msg in live_client:
+                        if hasattr(msg, "open") and hasattr(msg, "high") and hasattr(msg, "close"):
+                            o = msg.open * self.PRICE_SCALE
+                            h = msg.high * self.PRICE_SCALE
+                            l = msg.low * self.PRICE_SCALE
+                            c = msg.close * self.PRICE_SCALE
+                            v = msg.volume
+
+                            ts = pd.Timestamp(msg.ts_event, unit="ns", tz="UTC")
+                            self._process_bar(ts.to_pydatetime(), o, h, l, c, v)
+                            retries = 0  # reset on successful data
+
+                        elif hasattr(msg, "err"):
+                            print(f"\n  DATABENTO ERROR: {msg.err}")
+                        elif hasattr(msg, "stype_in_symbol"):
+                            print(f"  Symbol mapping: {msg.stype_in_symbol} -> instrument {msg.instrument_id}")
+                        elif hasattr(msg, "msg"):
+                            print(f"  DATABENTO SYSTEM: {msg.msg}")
+
+                except db.common.error.BentoError as e:
+                    retries += 1
+                    if retries > max_retries:
+                        print(f"\n  Max retries ({max_retries}) exceeded. Giving up.")
+                        raise
+                    delay = min(base_delay * (2 ** (retries - 1)), 60)
+                    print(f"\n  Connection lost: {e}")
+                    print(f"  Reconnecting in {delay}s...")
+                    time.sleep(delay)
 
         except KeyboardInterrupt:
             print("\n\n  Shutting down...")
