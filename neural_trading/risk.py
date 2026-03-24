@@ -10,7 +10,7 @@ class RiskConfig:
     """Risk parameters — these are non-negotiable hard limits."""
     daily_loss_limit: float = -1500.0         # allow ~3 losses before halt
     trailing_drawdown_limit: float = -3000.0  # max trailing drawdown
-    min_confidence: float = 0.60              # minimum confidence threshold
+    min_confidence: float = 0.0               # take all trades — bucket analysis
     cooldown_bars: int = 5                    # bars to wait after consecutive losses
     consecutive_loss_trigger: int = 3         # losses before cooldown activates
     max_position_size: int = 1                # max contracts — 1 for initial development

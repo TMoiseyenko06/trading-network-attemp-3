@@ -448,6 +448,32 @@ class LiveTrader:
                 print(f"    SHORT: {len(allowed[allowed['direction'] == 'SHORT'])}")
                 print(f"    Avg confidence: {allowed['confidence'].mean():.3f}")
 
+            # Confidence bucket analysis
+            trades = df[df["direction"] != "FLAT"].copy()
+            if len(trades) > 0:
+                print(f"\n  {'='*56}")
+                print(f"  CONFIDENCE BUCKETS")
+                print(f"  {'='*56}")
+                print(f"  {'Bucket':<12} {'Count':>6} {'Allowed':>8} {'Blocked':>8} {'Avg Conf':>9}")
+                print(f"  {'-'*56}")
+
+                for lo in range(0, 100, 10):
+                    hi = lo + 10
+                    mask = (trades["confidence"] >= lo / 100) & (trades["confidence"] < hi / 100)
+                    bucket = trades[mask]
+                    if len(bucket) == 0:
+                        continue
+                    n_allowed = bucket["allowed"].sum()
+                    n_blocked = len(bucket) - n_allowed
+                    avg_conf = bucket["confidence"].mean()
+                    print(
+                        f"  {lo:>3}-{hi:<3}%    {len(bucket):>6} {n_allowed:>8} {n_blocked:>8} {avg_conf:>9.3f}"
+                    )
+
+                print(f"  {'-'*56}")
+                print(f"  {'TOTAL':<12} {len(trades):>6} {trades['allowed'].sum():>8} "
+                      f"{len(trades) - trades['allowed'].sum():>8} {trades['confidence'].mean():>9.3f}")
+
             # Save trade log
             log_path = f"live_trades_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
             df.to_csv(log_path, index=False)
