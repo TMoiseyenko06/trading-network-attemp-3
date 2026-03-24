@@ -23,6 +23,7 @@ from neural_trading.risk import RiskManager, RiskConfig
 from neural_trading.preprocessing import compute_features, add_time_features, build_sequences
 from neural_trading.live import LiveTrader
 from neural_trading.backtest import Backtester
+from neural_trading.optimizer import GridOptimizer
 
 
 def load_ohlcv(path: str) -> pd.DataFrame:
@@ -303,6 +304,36 @@ def compare(args: argparse.Namespace) -> None:
     print()
 
 
+def optimize(args: argparse.Namespace) -> None:
+    """Run grid search over SL/TP/confidence combos."""
+    config = Config()
+    df = load_ohlcv(args.data)
+    print(f"Loaded {len(df)} bars from {args.data}")
+    print(f"Date range: {df.index[0]} -> {df.index[-1]}")
+
+    sl_range = [float(x) for x in np.arange(args.sl_min, args.sl_max + 1, args.step)]
+    tp_range = [float(x) for x in np.arange(args.tp_min, args.tp_max + 1, args.step)]
+    conf_range = [float(x) / 100 for x in range(args.conf_min, args.conf_max + 1, args.conf_step)]
+
+    opt = GridOptimizer(
+        model_path=args.model,
+        point_value=args.point_value,
+        starting_equity=args.equity,
+        commission=args.commission,
+        max_bars_in_trade=config.max_bars,
+        lookback=config.lookback,
+        test_pct=args.test_pct,
+    )
+
+    results_df = opt.run(df, sl_range, tp_range, conf_range)
+    opt.print_top(results_df, n=args.top)
+
+    # Save full results
+    out_path = args.output
+    results_df.to_csv(out_path, index=False)
+    print(f"\n  Full results saved to {out_path} ({len(results_df):,} combos)")
+
+
 def live(args: argparse.Namespace) -> None:
     """Run live paper trading with Databento feed."""
     trader = LiveTrader(
@@ -355,6 +386,24 @@ def main():
     cmp_p.add_argument("--test-pct", type=float, default=0.2, help="Fraction of data for test")
     cmp_p.add_argument("--no-halt", action="store_true", help="Disable circuit breakers")
 
+    opt_p = sub.add_parser("optimize", help="Grid search over SL/TP/confidence to find best params")
+    opt_p.add_argument("--data", required=True, help="Path to OHLCV data (.dbn or .csv)")
+    opt_p.add_argument("--model", default="model.pt", help="Path to saved model checkpoint")
+    opt_p.add_argument("--sl-min", type=float, default=10, help="Min SL in points (default: 10)")
+    opt_p.add_argument("--sl-max", type=float, default=100, help="Max SL in points (default: 100)")
+    opt_p.add_argument("--tp-min", type=float, default=10, help="Min TP in points (default: 10)")
+    opt_p.add_argument("--tp-max", type=float, default=100, help="Max TP in points (default: 100)")
+    opt_p.add_argument("--step", type=float, default=5, help="Step size for SL/TP (default: 5)")
+    opt_p.add_argument("--conf-min", type=int, default=0, help="Min confidence %% (default: 0)")
+    opt_p.add_argument("--conf-max", type=int, default=90, help="Max confidence %% (default: 90)")
+    opt_p.add_argument("--conf-step", type=int, default=5, help="Confidence step %% (default: 5)")
+    opt_p.add_argument("--equity", type=float, default=50000.0, help="Starting equity")
+    opt_p.add_argument("--point-value", type=float, default=20.0, help="Point value (NQ=20)")
+    opt_p.add_argument("--commission", type=float, default=4.50, help="Round-trip commission")
+    opt_p.add_argument("--test-pct", type=float, default=0.2, help="Fraction of data for test")
+    opt_p.add_argument("--top", type=int, default=25, help="Number of top results to display")
+    opt_p.add_argument("--output", default="grid_results.csv", help="Path to save full results CSV")
+
     live_p = sub.add_parser("live", help="Run live paper trading with Databento feed")
     live_p.add_argument("--model", default="model.pt", help="Path to saved model checkpoint")
     live_p.add_argument("--dataset", default="GLBX.MDP3", help="Databento dataset (default: GLBX.MDP3)")
@@ -372,6 +421,8 @@ def main():
         backtest(args)
     elif args.command == "compare":
         compare(args)
+    elif args.command == "optimize":
+        optimize(args)
     elif args.command == "live":
         live(args)
     else:
