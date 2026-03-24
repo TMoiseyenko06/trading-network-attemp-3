@@ -212,6 +212,97 @@ def backtest(args: argparse.Namespace) -> None:
     bt.export_trades(result, save_path=args.trades)
 
 
+def compare(args: argparse.Namespace) -> None:
+    """Run multiple TP/SL setups on the same model and compare results."""
+    config = Config()
+    df = load_ohlcv(args.data)
+    print(f"Loaded {len(df)} bars from {args.data}")
+    print(f"Date range: {df.index[0]} -> {df.index[-1]}")
+
+    # Parse setups: "SL:TP" pairs
+    setups = []
+    for s in args.setups:
+        sl_str, tp_str = s.split(":")
+        setups.append((float(sl_str), float(tp_str)))
+
+    min_conf = args.min_confidence
+
+    results = {}
+    for sl, tp in setups:
+        label = f"SL{sl:.0f}/TP{tp:.0f}"
+        print(f"\n{'#'*60}")
+        print(f"  SETUP: {label}  (min conf={min_conf:.0%})")
+        print(f"{'#'*60}")
+
+        risk_cfg = RiskConfig(
+            daily_loss_limit=config.daily_loss_limit,
+            min_confidence=min_conf,
+            cooldown_bars=config.cooldown_bars,
+            consecutive_loss_trigger=config.consecutive_loss_trigger,
+            max_position_size=config.max_position_size,
+            max_trades_per_day=config.max_trades_per_day,
+            min_bars_between_trades=config.min_bars_between_trades,
+        )
+        if args.no_halt:
+            risk_cfg.no_halt = True
+
+        bt = Backtester(
+            model_path=args.model,
+            point_value=args.point_value,
+            starting_equity=args.equity,
+            commission_per_contract=args.commission,
+            max_bars_in_trade=config.max_bars,
+            risk_config=risk_cfg,
+            lookback=config.lookback,
+            fixed_tp_points=tp,
+            fixed_sl_points=sl,
+        )
+
+        result = bt.run(df, test_pct=args.test_pct)
+        bt.plot_equity_curve(result, save_path=f"equity_{label}.png")
+        bt.export_trades(result, save_path=f"trades_{label}.csv")
+        results[label] = result
+
+    # Print comparison table
+    print(f"\n\n{'='*100}")
+    print(f"  COMPARISON TABLE  (min confidence = {min_conf:.0%})")
+    print(f"{'='*100}")
+
+    header = (
+        f"{'Setup':<14s} {'Trades':>6s} {'WR':>6s} {'PF':>5s} "
+        f"{'Total P&L':>11s} {'Avg Win':>9s} {'Avg Loss':>9s} {'R:R':>5s} "
+        f"{'MaxDD':>9s} {'DD%':>7s} {'Sharpe':>7s} {'Sortino':>7s} "
+        f"{'ProfDays':>8s}"
+    )
+    print(header)
+    print("-" * len(header))
+
+    for label, r in results.items():
+        row = (
+            f"{label:<14s} {r.total_trades:>6d} {r.win_rate:>5.1%} {r.profit_factor:>5.2f} "
+            f"${r.total_pnl:>+10,.0f} ${r.avg_win:>8,.0f} ${r.avg_loss:>8,.0f} {r.avg_rr_realized:>5.2f} "
+            f"${r.max_drawdown:>8,.0f} {r.max_drawdown_pct:>6.1f}% {r.sharpe:>7.2f} {r.sortino:>7.2f} "
+            f"{r.profitable_day_pct:>7.0f}%"
+        )
+        print(row)
+
+    print(f"{'='*100}")
+
+    # Rank by total P&L
+    ranked = sorted(results.items(), key=lambda x: x[1].total_pnl, reverse=True)
+    print(f"\n  Ranked by Total P&L:")
+    for i, (label, r) in enumerate(ranked, 1):
+        print(f"    {i}. {label:14s}  ${r.total_pnl:>+10,.0f}  (WR={r.win_rate:.1%}, PF={r.profit_factor:.2f}, Sharpe={r.sharpe:.2f})")
+
+    # Rank by Sharpe
+    ranked_sharpe = sorted(results.items(), key=lambda x: x[1].sharpe, reverse=True)
+    print(f"\n  Ranked by Sharpe:")
+    for i, (label, r) in enumerate(ranked_sharpe, 1):
+        print(f"    {i}. {label:14s}  Sharpe={r.sharpe:.2f}  (P&L=${r.total_pnl:>+,.0f}, DD={r.max_drawdown_pct:.1f}%)")
+
+    print()
+
+
 def live(args: argparse.Namespace) -> None:
     """Run live paper trading with Databento feed."""
     trader = LiveTrader(
@@ -251,6 +342,19 @@ def main():
     bt_p.add_argument("--min-confidence", type=float, default=None, help="Minimum confidence threshold (default: from RiskConfig)")
     bt_p.add_argument("--no-halt", action="store_true", help="Disable circuit breakers (daily loss limit & trailing drawdown halt)")
 
+    cmp_p = sub.add_parser("compare", help="Run multiple TP/SL setups and compare results")
+    cmp_p.add_argument("--data", required=True, help="Path to OHLCV data (.dbn or .csv)")
+    cmp_p.add_argument("--model", default="model.pt", help="Path to saved model checkpoint")
+    cmp_p.add_argument("--setups", nargs="+", required=True,
+                        help="SL:TP pairs in points, e.g. 20:35 25:50 30:60")
+    cmp_p.add_argument("--min-confidence", type=float, default=0.60,
+                        help="Minimum confidence threshold (default: 0.60)")
+    cmp_p.add_argument("--equity", type=float, default=50000.0, help="Starting equity")
+    cmp_p.add_argument("--point-value", type=float, default=20.0, help="Point value (NQ=20)")
+    cmp_p.add_argument("--commission", type=float, default=4.50, help="Round-trip commission")
+    cmp_p.add_argument("--test-pct", type=float, default=0.2, help="Fraction of data for test")
+    cmp_p.add_argument("--no-halt", action="store_true", help="Disable circuit breakers")
+
     live_p = sub.add_parser("live", help="Run live paper trading with Databento feed")
     live_p.add_argument("--model", default="model.pt", help="Path to saved model checkpoint")
     live_p.add_argument("--dataset", default="GLBX.MDP3", help="Databento dataset (default: GLBX.MDP3)")
@@ -266,6 +370,8 @@ def main():
         infer(args)
     elif args.command == "backtest":
         backtest(args)
+    elif args.command == "compare":
+        compare(args)
     elif args.command == "live":
         live(args)
     else:
