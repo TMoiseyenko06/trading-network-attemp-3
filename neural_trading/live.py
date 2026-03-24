@@ -285,6 +285,7 @@ class LiveTrader:
                     "sl_points": self.fixed_sl_points,
                     "entry_time": ts,
                     "bars_held": 0,
+                    "trade_log_idx": len(self._trade_log),  # index into trade log
                 }
         else:
             if direction == 2:
@@ -351,6 +352,13 @@ class LiveTrader:
                 f"pnl=${pnl:+.2f} held={pos['bars_held']}bars | "
                 f"equity={self.risk_mgr.state.current_equity:.2f}"
             )
+
+            # Record result back into trade log for bucket analysis
+            idx = pos.get("trade_log_idx")
+            if idx is not None and idx < len(self._trade_log):
+                self._trade_log[idx]["result"] = result
+                self._trade_log[idx]["pnl"] = pnl
+
             self._current_position = None
 
     def run(self) -> None:
@@ -451,11 +459,16 @@ class LiveTrader:
             # Confidence bucket analysis
             trades = df[df["direction"] != "FLAT"].copy()
             if len(trades) > 0:
-                print(f"\n  {'='*56}")
+                print(f"\n  {'='*76}")
                 print(f"  CONFIDENCE BUCKETS")
-                print(f"  {'='*56}")
-                print(f"  {'Bucket':<12} {'Count':>6} {'Allowed':>8} {'Blocked':>8} {'Avg Conf':>9}")
-                print(f"  {'-'*56}")
+                print(f"  {'='*76}")
+                print(f"  {'Bucket':<12} {'Trades':>6} {'Closed':>7} {'Wins':>5} {'Losses':>7} {'WinRate':>8} {'PnL':>10}")
+                print(f"  {'-'*76}")
+
+                total_closed = 0
+                total_wins = 0
+                total_losses = 0
+                total_pnl = 0.0
 
                 for lo in range(0, 100, 10):
                     hi = lo + 10
@@ -463,16 +476,31 @@ class LiveTrader:
                     bucket = trades[mask]
                     if len(bucket) == 0:
                         continue
-                    n_allowed = bucket["allowed"].sum()
-                    n_blocked = len(bucket) - n_allowed
-                    avg_conf = bucket["confidence"].mean()
+
+                    # Only count trades that have a result (closed positions)
+                    closed = bucket[bucket["result"].notna()] if "result" in bucket.columns else bucket.iloc[0:0]
+                    n_closed = len(closed)
+                    wins = len(closed[closed["result"] == "TP"]) if n_closed > 0 else 0
+                    losses = len(closed[closed["result"] == "SL"]) if n_closed > 0 else 0
+                    bucket_pnl = closed["pnl"].sum() if n_closed > 0 and "pnl" in closed.columns else 0.0
+                    win_rate = (wins / n_closed * 100) if n_closed > 0 else 0.0
+
+                    total_closed += n_closed
+                    total_wins += wins
+                    total_losses += losses
+                    total_pnl += bucket_pnl
+
                     print(
-                        f"  {lo:>3}-{hi:<3}%    {len(bucket):>6} {n_allowed:>8} {n_blocked:>8} {avg_conf:>9.3f}"
+                        f"  {lo:>3}-{hi:<3}%    {len(bucket):>6} {n_closed:>7} {wins:>5} {losses:>7} "
+                        f"{win_rate:>7.1f}% ${bucket_pnl:>+9.2f}"
                     )
 
-                print(f"  {'-'*56}")
-                print(f"  {'TOTAL':<12} {len(trades):>6} {trades['allowed'].sum():>8} "
-                      f"{len(trades) - trades['allowed'].sum():>8} {trades['confidence'].mean():>9.3f}")
+                total_wr = (total_wins / total_closed * 100) if total_closed > 0 else 0.0
+                print(f"  {'-'*76}")
+                print(
+                    f"  {'TOTAL':<12} {len(trades):>6} {total_closed:>7} {total_wins:>5} {total_losses:>7} "
+                    f"{total_wr:>7.1f}% ${total_pnl:>+9.2f}"
+                )
 
             # Save trade log
             log_path = f"live_trades_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
