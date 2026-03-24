@@ -264,6 +264,11 @@ class LiveTrader:
         dir_label = labels[direction]
         prob_str = f"W={probs[0]:.2f} L={probs[1]:.2f} F={probs[2]:.2f}"
 
+        # Block new entry if a position is still open
+        if self._current_position is not None:
+            allowed = False
+            reason = "position_open"
+
         if allowed:
             if direction == 0:  # LONG
                 tp_price = last_close + self.fixed_tp_points
