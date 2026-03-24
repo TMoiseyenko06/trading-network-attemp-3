@@ -191,7 +191,7 @@ class LiveTrader:
         if signal is None:
             print(f"  [{ts.strftime('%H:%M:%S')}] bar #{self._bar_count} | {c:.2f} | no signal")
             return
-        self._handle_signal(signal, ts, c)
+        self._handle_signal(signal, ts, o, h, l, c)
 
     def _infer(self) -> Optional[dict]:
         """Run model inference on current buffer."""
@@ -235,7 +235,7 @@ class LiveTrader:
             "magnitude": mag,
         }
 
-    def _handle_signal(self, signal: dict, ts: datetime, close_price: float = 0) -> None:
+    def _handle_signal(self, signal: dict, ts: datetime, bar_open: float, bar_high: float, bar_low: float, close_price: float) -> None:
         """Process a model signal through risk management and log it."""
         direction = signal["direction"]
         conf = signal["confidence"]
@@ -255,9 +255,9 @@ class LiveTrader:
 
         self._signal_count += 1
 
-        # Resolve any open position (simulated)
+        # Resolve any open position (simulated) using intrabar high/low
         if self._current_position is not None:
-            self._resolve_position(last_close, ts)
+            self._resolve_position(bar_high, bar_low, last_close, ts)
 
         # Log the signal
         ts_str = ts.strftime("%H:%M:%S")
@@ -329,8 +329,8 @@ class LiveTrader:
         self._trade_log.append(entry)
         self._save_trade_row(entry)
 
-    def _resolve_position(self, current_price: float, ts: datetime) -> None:
-        """Simulate resolving the previous position (paper trading)."""
+    def _resolve_position(self, bar_high: float, bar_low: float, bar_close: float, ts: datetime) -> None:
+        """Simulate resolving the previous position using intrabar prices."""
         pos = self._current_position
         if pos is None:
             return
@@ -341,16 +341,33 @@ class LiveTrader:
         sl_pts = pos["sl_points"]
 
         if pos["direction"] == 0:  # LONG
-            price_diff = current_price - entry
-            hit_tp = price_diff >= tp_pts
-            hit_sl = price_diff <= -sl_pts
+            # High is best case, low is worst case
+            hit_tp = (bar_high - entry) >= tp_pts
+            hit_sl = (bar_low - entry) <= -sl_pts
         else:  # SHORT
-            price_diff = entry - current_price
-            hit_tp = price_diff >= tp_pts
-            hit_sl = price_diff <= -sl_pts
+            # Low is best case, high is worst case
+            hit_tp = (entry - bar_low) >= tp_pts
+            hit_sl = (entry - bar_high) <= -sl_pts
+
+        # If both hit in same bar, assume SL hit first (conservative)
+        if hit_tp and hit_sl:
+            hit_tp = False
 
         # Check barriers or timeout
         if hit_tp or hit_sl or pos["bars_held"] >= self.config.max_bars:
+            # Calculate P&L based on exit price
+            if hit_tp:
+                exit_price = entry + tp_pts if pos["direction"] == 0 else entry - tp_pts
+            elif hit_sl:
+                exit_price = entry - sl_pts if pos["direction"] == 0 else entry + sl_pts
+            else:  # TIMEOUT — exits at bar close
+                exit_price = bar_close
+
+            if pos["direction"] == 0:
+                price_diff = exit_price - entry
+            else:
+                price_diff = entry - exit_price
+
             # P&L in dollars (NQ: $20/point)
             pnl = price_diff * pos["size"] * 20.0
             self.risk_mgr.record_trade_result(pnl, entry_bar=self._signal_count)
