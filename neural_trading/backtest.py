@@ -147,16 +147,68 @@ class Backtester:
             "probs": probs,
         }
 
+    @torch.no_grad()
+    def _predict_all(self, feat_values: np.ndarray, bar_indices: list[int]) -> dict[int, dict]:
+        """Batch inference on all valid bars at once. Returns {bar_idx: prediction_dict}."""
+        if not bar_indices:
+            return {}
+
+        batch_size = 512
+        results = {}
+        total = len(bar_indices)
+        print(f"  Batched inference on {total} bars...", end=" ", flush=True)
+
+        import time
+        t0 = time.time()
+
+        for batch_start in range(0, total, batch_size):
+            batch_idx = bar_indices[batch_start:batch_start + batch_size]
+            windows = np.stack([
+                feat_values[i - self.lookback + 1:i + 1]
+                for i in batch_idx
+            ])
+            X = torch.from_numpy(windows).to(self.device)
+
+            with torch.amp.autocast("cuda", enabled=self.gpu.use_amp):
+                dir_logits, conf, mag, pred_tp, pred_sl = self.model(X)
+
+            probs = torch.softmax(dir_logits, dim=1).cpu().numpy()
+            directions = dir_logits.argmax(dim=1).cpu().numpy()
+            confidences = torch.sigmoid(conf).cpu().numpy().flatten()
+            magnitudes = mag.cpu().numpy().flatten()
+            tp_pcts = pred_tp.cpu().numpy().flatten()
+            sl_pcts = pred_sl.cpu().numpy().flatten()
+
+            for j, idx in enumerate(batch_idx):
+                results[idx] = {
+                    "direction": int(directions[j]),
+                    "confidence": float(confidences[j]),
+                    "magnitude": float(magnitudes[j]),
+                    "tp_pct": float(tp_pcts[j]),
+                    "sl_pct": float(sl_pcts[j]),
+                    "probs": probs[j],
+                }
+
+        elapsed = time.time() - t0
+        print(f"done ({elapsed:.1f}s)")
+        return results
+
     def _resolve_trade(
         self,
-        df: pd.DataFrame,
+        highs: np.ndarray,
+        lows: np.ndarray,
+        closes: np.ndarray,
+        index: pd.Index,
         entry_idx: int,
         direction: str,
         entry_price: float,
         size: int,
         confidence: float,
     ) -> Trade:
-        """Simulate a trade forward from entry bar using fixed point TP/SL."""
+        """Simulate a trade forward from entry bar using fixed point TP/SL.
+
+        Uses pre-extracted numpy arrays for speed (not df.iloc).
+        """
         if direction == "LONG":
             tp_price = entry_price + self.fixed_tp_points
             sl_price = entry_price - self.fixed_sl_points
@@ -168,49 +220,45 @@ class Backtester:
         exit_price = entry_price
         exit_reason = "TIMEOUT"
 
-        n = len(df)
+        n = len(highs)
         for j in range(1, min(self.max_bars_in_trade + 1, n - entry_idx)):
-            bar_idx = entry_idx + j
-            bar_high = df["high"].iloc[bar_idx]
-            bar_low = df["low"].iloc[bar_idx]
-            bar_close = df["close"].iloc[bar_idx]
+            bi = entry_idx + j
+            bar_high = highs[bi]
+            bar_low = lows[bi]
+            bar_close = closes[bi]
 
             if direction == "LONG":
-                # Check SL first (conservative — assumes adverse move happens first)
                 if bar_low <= sl_price:
-                    exit_bar = bar_idx
+                    exit_bar = bi
                     exit_price = sl_price
                     exit_reason = "SL"
                     break
                 if bar_high >= tp_price:
-                    exit_bar = bar_idx
+                    exit_bar = bi
                     exit_price = tp_price
                     exit_reason = "TP"
                     break
-            else:  # SHORT
+            else:
                 if bar_high >= sl_price:
-                    exit_bar = bar_idx
+                    exit_bar = bi
                     exit_price = sl_price
                     exit_reason = "SL"
                     break
                 if bar_low <= tp_price:
-                    exit_bar = bar_idx
+                    exit_bar = bi
                     exit_price = tp_price
                     exit_reason = "TP"
                     break
 
-            # If last bar in window, exit at close
             if j == self.max_bars_in_trade:
-                exit_bar = bar_idx
+                exit_bar = bi
                 exit_price = bar_close
                 break
 
-        # If we ran out of data
         if exit_bar == entry_idx:
             exit_bar = min(entry_idx + 1, n - 1)
-            exit_price = df["close"].iloc[exit_bar]
+            exit_price = closes[exit_bar]
 
-        # Calculate P&L
         if direction == "LONG":
             price_diff = exit_price - entry_price
         else:
@@ -218,8 +266,8 @@ class Backtester:
 
         pnl = price_diff * self.point_value * size - self.commission * size
 
-        entry_time = df.index[entry_idx] if isinstance(df.index, pd.DatetimeIndex) else None
-        exit_time = df.index[exit_bar] if isinstance(df.index, pd.DatetimeIndex) else None
+        entry_time = index[entry_idx] if isinstance(index, pd.DatetimeIndex) else None
+        exit_time = index[exit_bar] if isinstance(index, pd.DatetimeIndex) else None
 
         return Trade(
             entry_bar=entry_idx,
@@ -274,6 +322,34 @@ class Backtester:
         print(f"  Commission: ${self.commission}/contract round-trip")
         print()
 
+        # Pre-extract numpy arrays — avoids df.iloc in inner loops (huge speedup)
+        highs = df["high"].values
+        lows = df["low"].values
+        closes = df["close"].values
+        opens = df["open"].values
+        index = df.index
+
+        # Pre-compute time-of-day filter mask
+        is_datetime = isinstance(index, pd.DatetimeIndex)
+        time_mask = np.ones(total_bars, dtype=bool)
+        if is_datetime:
+            hour_mins = index.hour * 60 + index.minute
+            time_mask = ~(((hour_mins >= 810) & (hour_mins <= 840)) |
+                          ((hour_mins >= 1170) & (hour_mins <= 1200)))
+
+        # Collect all valid bar indices for batched inference
+        valid_bars = []
+        for i in range(test_start, total_bars - 1):
+            if i < self.lookback:
+                continue
+            if not time_mask[i]:
+                continue
+            valid_bars.append(i)
+
+        # Batch inference — run model on ALL valid bars at once
+        predictions = self._predict_all(feat_values, valid_bars)
+
+        # Now walk through bars with cached predictions (no more GPU calls)
         trades: list[Trade] = []
         equity = self.starting_equity
         equity_series = {}
@@ -283,47 +359,29 @@ class Backtester:
         skipped = {"flat": 0, "low_conf": 0, "risk_rr": 0, "risk_halted": 0, "risk_cooldown": 0, "max_trades": 0, "bar_gap": 0, "risk_other": 0}
 
         for i in range(test_start, total_bars - 1):
-            # Reset daily stats at day boundaries
-            ts = df.index[i]
-            if isinstance(ts, pd.Timestamp):
+            ts = index[i]
+            if is_datetime:
                 day = ts.date()
                 if day != current_day:
                     self.risk_mgr.reset_daily()
                     current_day = day
 
-            # Track equity at every bar
             equity_series[ts] = equity
 
-            # Skip if still in a trade
             if in_trade and i <= current_trade_exit_bar:
                 continue
             in_trade = False
 
-            # Need full lookback window
-            if i < self.lookback:
-                continue
-
-            # Time-of-day filter: skip first/last 30 min of RTH (9:30-10:00, 15:30-16:00 ET)
-            if isinstance(ts, pd.Timestamp):
-                t = ts.time()
-                # Convert to ET if needed (data may be UTC — 9:30 ET = 13:30 UTC, 16:00 ET = 20:00 UTC)
-                hour_min = t.hour * 60 + t.minute
-                # Skip 13:30-14:00 UTC (9:30-10:00 ET) and 19:30-20:00 UTC (15:30-16:00 ET)
-                if (810 <= hour_min <= 840) or (1170 <= hour_min <= 1200):
+            # Skip bars that weren't predicted (time filter / not enough lookback)
+            if i not in predictions:
+                if not time_mask[i]:
                     skipped["flat"] += 1
-                    continue
-
-            # Get prediction
-            window = feat_values[i - self.lookback + 1:i + 1]
-            if len(window) < self.lookback:
                 continue
 
-            pred = self._predict(window)
-
+            pred = predictions[i]
             direction_idx = pred["direction"]
             confidence = pred["confidence"]
 
-            # Map direction
             if direction_idx == 0:
                 direction = "LONG"
             elif direction_idx == 1:
@@ -332,12 +390,10 @@ class Backtester:
                 skipped["flat"] += 1
                 continue
 
-            # Use fixed TP/SL as pct for risk check (R:R is always 1.75)
-            entry_approx = df["close"].iloc[i]
+            entry_approx = closes[i]
             tp_pct_approx = self.fixed_tp_points / entry_approx
             sl_pct_approx = self.fixed_sl_points / entry_approx
 
-            # Risk check
             allowed, size, reason = self.risk_mgr.check_trade(
                 confidence, direction_idx, tp_pct_approx, sl_pct_approx,
                 current_bar=i,
@@ -359,14 +415,14 @@ class Backtester:
                     skipped["risk_other"] += 1
                 continue
 
-            # Enter trade at next bar's open
             entry_idx = i + 1
             if entry_idx >= total_bars:
                 break
-            entry_price = df["open"].iloc[entry_idx]
+            entry_price = opens[entry_idx]
 
             trade = self._resolve_trade(
-                df, entry_idx, direction, entry_price,
+                highs, lows, closes, index,
+                entry_idx, direction, entry_price,
                 size, confidence,
             )
             trades.append(trade)

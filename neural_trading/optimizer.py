@@ -9,9 +9,157 @@ from typing import Optional
 import time
 import sys
 
+from numba import njit
+
 from .model import NeuralOHLCVNet
 from .preprocessing import compute_features, add_time_features
 from .gpu import detect_gpu
+
+
+@njit(cache=True)
+def _simulate_combo_jit(
+    signal_bars: np.ndarray,      # int64 — bar indices
+    signal_dirs: np.ndarray,      # int64 — 0=LONG, 1=SHORT
+    signal_confs: np.ndarray,     # float64 — confidences
+    highs: np.ndarray,
+    lows: np.ndarray,
+    closes: np.ndarray,
+    opens: np.ndarray,
+    sl_pts: float,
+    tp_pts: float,
+    min_conf: float,
+    max_bars: int,
+    point_value: float,
+    commission: float,
+    starting_equity: float,
+) -> tuple:
+    """Pure-numeric trade simulation, JIT-compiled by Numba.
+
+    Returns (total_trades, winners, losers, timeouts,
+             total_pnl, total_win_pnl, total_loss_pnl,
+             max_dd, max_dd_pct).
+    """
+    equity = starting_equity
+    peak_equity = equity
+    max_dd = 0.0
+    max_dd_pct = 0.0
+
+    winners = 0
+    losers = 0
+    timeouts = 0
+    total_win_pnl = 0.0
+    total_loss_pnl = 0.0
+    total_pnl = 0.0
+
+    in_trade = False
+    trade_exit_bar = 0
+    n = len(closes)
+
+    for s in range(len(signal_bars)):
+        bar_idx = signal_bars[s]
+        direction = signal_dirs[s]
+        confidence = signal_confs[s]
+
+        if confidence < min_conf:
+            continue
+
+        if in_trade and bar_idx <= trade_exit_bar:
+            continue
+        in_trade = False
+
+        entry_idx = bar_idx + 1
+        if entry_idx >= n:
+            break
+        entry_price = opens[entry_idx]
+
+        if direction == 0:  # LONG
+            tp_price = entry_price + tp_pts
+            sl_price = entry_price - sl_pts
+        else:  # SHORT
+            tp_price = entry_price - tp_pts
+            sl_price = entry_price + sl_pts
+
+        exit_reason = 0  # 0=TIMEOUT, 1=TP, 2=SL
+        exit_price = entry_price
+        exit_bar = entry_idx
+
+        max_j = min(max_bars + 1, n - entry_idx)
+        for j in range(1, max_j):
+            bi = entry_idx + j
+            bh = highs[bi]
+            bl = lows[bi]
+            bc = closes[bi]
+
+            if direction == 0:  # LONG
+                if bl <= sl_price:
+                    exit_bar = bi
+                    exit_price = sl_price
+                    exit_reason = 2
+                    break
+                if bh >= tp_price:
+                    exit_bar = bi
+                    exit_price = tp_price
+                    exit_reason = 1
+                    break
+            else:  # SHORT
+                if bh >= sl_price:
+                    exit_bar = bi
+                    exit_price = sl_price
+                    exit_reason = 2
+                    break
+                if bl <= tp_price:
+                    exit_bar = bi
+                    exit_price = tp_price
+                    exit_reason = 1
+                    break
+
+            if j == max_bars:
+                exit_bar = bi
+                exit_price = bc
+                break
+
+        if exit_bar == entry_idx:
+            exit_bar = min(entry_idx + 1, n - 1)
+            exit_price = closes[exit_bar]
+
+        if direction == 0:
+            price_diff = exit_price - entry_price
+        else:
+            price_diff = entry_price - exit_price
+
+        pnl = price_diff * point_value - commission
+
+        if exit_reason == 1:  # TP
+            winners += 1
+            total_win_pnl += pnl
+        elif exit_reason == 2:  # SL
+            losers += 1
+            total_loss_pnl += pnl
+        else:
+            timeouts += 1
+            if pnl > 0:
+                total_win_pnl += pnl
+            else:
+                total_loss_pnl += pnl
+
+        total_pnl += pnl
+        equity += pnl
+
+        if equity > peak_equity:
+            peak_equity = equity
+        dd = equity - peak_equity
+        if dd < max_dd:
+            max_dd = dd
+            if peak_equity > 0:
+                max_dd_pct = dd / peak_equity * 100
+
+        in_trade = True
+        trade_exit_bar = exit_bar
+
+    total_trades = winners + losers + timeouts
+    return (total_trades, winners, losers, timeouts,
+            total_pnl, total_win_pnl, total_loss_pnl,
+            max_dd, max_dd_pct)
 
 
 @dataclass
@@ -123,11 +271,24 @@ class GridOptimizer:
 
         elapsed = time.time() - t0
         print(f"done ({elapsed:.1f}s, {len(signals)} non-flat signals)")
-        return signals
+
+        # Convert to structured numpy arrays for Numba
+        if signals:
+            signal_bars = np.array([s[0] for s in signals], dtype=np.int64)
+            signal_dirs = np.array([s[1] for s in signals], dtype=np.int64)
+            signal_confs = np.array([s[2] for s in signals], dtype=np.float64)
+        else:
+            signal_bars = np.empty(0, dtype=np.int64)
+            signal_dirs = np.empty(0, dtype=np.int64)
+            signal_confs = np.empty(0, dtype=np.float64)
+
+        return signal_bars, signal_dirs, signal_confs
 
     def _simulate_combo(
         self,
-        signals: list,
+        signal_bars: np.ndarray,
+        signal_dirs: np.ndarray,
+        signal_confs: np.ndarray,
         highs: np.ndarray,
         lows: np.ndarray,
         closes: np.ndarray,
@@ -136,135 +297,20 @@ class GridOptimizer:
         tp_pts: float,
         min_conf: float,
     ) -> ComboResult:
-        """Replay trade logic for a single param combo. Pure numpy, no model calls."""
-        equity = self.starting_equity
-        peak_equity = equity
-        max_dd = 0.0
-        max_dd_pct = 0.0
-
-        winners = 0
-        losers = 0
-        timeouts = 0
-        total_win_pnl = 0.0
-        total_loss_pnl = 0.0
-        total_pnl = 0.0
-
-        in_trade = False
-        trade_exit_bar = 0
-        n = len(closes)
-
-        for bar_idx, direction, confidence in signals:
-            # Confidence filter
-            if confidence < min_conf:
-                continue
-
-            # Still in a trade
-            if in_trade and bar_idx <= trade_exit_bar:
-                continue
-            in_trade = False
-
-            # Enter at next bar's open
-            entry_idx = bar_idx + 1
-            if entry_idx >= n:
-                break
-            entry_price = opens[entry_idx]
-
-            # Compute TP/SL prices
-            if direction == 0:  # LONG
-                tp_price = entry_price + tp_pts
-                sl_price = entry_price - sl_pts
-            else:  # SHORT
-                tp_price = entry_price - tp_pts
-                sl_price = entry_price + sl_pts
-
-            # Resolve trade forward
-            exit_reason = "TIMEOUT"
-            exit_price = entry_price
-            exit_bar = entry_idx
-
-            for j in range(1, min(self.max_bars + 1, n - entry_idx)):
-                bi = entry_idx + j
-                bh = highs[bi]
-                bl = lows[bi]
-                bc = closes[bi]
-
-                if direction == 0:  # LONG
-                    if bl <= sl_price:
-                        exit_bar = bi
-                        exit_price = sl_price
-                        exit_reason = "SL"
-                        break
-                    if bh >= tp_price:
-                        exit_bar = bi
-                        exit_price = tp_price
-                        exit_reason = "TP"
-                        break
-                else:  # SHORT
-                    if bh >= sl_price:
-                        exit_bar = bi
-                        exit_price = sl_price
-                        exit_reason = "SL"
-                        break
-                    if bl <= tp_price:
-                        exit_bar = bi
-                        exit_price = tp_price
-                        exit_reason = "TP"
-                        break
-
-                if j == self.max_bars:
-                    exit_bar = bi
-                    exit_price = bc
-                    break
-
-            # If ran out of data
-            if exit_bar == entry_idx:
-                exit_bar = min(entry_idx + 1, n - 1)
-                exit_price = closes[exit_bar]
-
-            # P&L
-            if direction == 0:
-                price_diff = exit_price - entry_price
-            else:
-                price_diff = entry_price - exit_price
-
-            pnl = price_diff * self.point_value - self.commission
-
-            # Track stats
-            if exit_reason == "TP":
-                winners += 1
-                total_win_pnl += pnl
-            elif exit_reason == "SL":
-                losers += 1
-                total_loss_pnl += pnl
-            else:
-                timeouts += 1
-                if pnl > 0:
-                    total_win_pnl += pnl
-                else:
-                    total_loss_pnl += pnl
-
-            total_pnl += pnl
-            equity += pnl
-
-            if equity > peak_equity:
-                peak_equity = equity
-            dd = equity - peak_equity
-            if dd < max_dd:
-                max_dd = dd
-                max_dd_pct = dd / peak_equity * 100 if peak_equity > 0 else 0
-
-            in_trade = True
-            trade_exit_bar = exit_bar
-
-        total_trades = winners + losers + timeouts
-        win_count = winners + sum(1 for _ in [] if True)  # just winners from TP
-        # For win rate, count all profitable trades
-        all_wins = total_win_pnl
-        all_losses = abs(total_loss_pnl)
+        """Replay trade logic via JIT-compiled function."""
+        (total_trades, winners, losers, timeouts,
+         total_pnl, total_win_pnl, total_loss_pnl,
+         max_dd, max_dd_pct) = _simulate_combo_jit(
+            signal_bars, signal_dirs, signal_confs,
+            highs, lows, closes, opens,
+            sl_pts, tp_pts, min_conf,
+            self.max_bars, self.point_value, self.commission,
+            self.starting_equity,
+        )
 
         avg_win = total_win_pnl / max(winners, 1)
         avg_loss = total_loss_pnl / max(losers, 1)
-        pf = all_wins / max(all_losses, 1.0)
+        pf = total_win_pnl / max(abs(total_loss_pnl), 1.0)
         wr = winners / max(total_trades, 1)
         avg_rr = abs(avg_win / avg_loss) if avg_loss != 0 else 0.0
 
@@ -304,13 +350,25 @@ class GridOptimizer:
         print()
 
         # Step 1: Run inference ONCE
-        signals = self._run_all_predictions(feat_values, test_start)
+        signal_bars, signal_dirs, signal_confs = self._run_all_predictions(feat_values, test_start)
 
-        # Pre-extract price arrays for fast numpy access
-        highs = df["high"].values
-        lows = df["low"].values
-        closes = df["close"].values
-        opens = df["open"].values
+        # Pre-extract price arrays as contiguous float64 for Numba
+        highs = np.ascontiguousarray(df["high"].values, dtype=np.float64)
+        lows = np.ascontiguousarray(df["low"].values, dtype=np.float64)
+        closes = np.ascontiguousarray(df["close"].values, dtype=np.float64)
+        opens = np.ascontiguousarray(df["open"].values, dtype=np.float64)
+
+        # Warm up Numba JIT (first call compiles; subsequent calls are native speed)
+        print("  Compiling JIT...", end=" ", flush=True)
+        t_jit = time.time()
+        _simulate_combo_jit(
+            signal_bars[:1], signal_dirs[:1], signal_confs[:1],
+            highs, lows, closes, opens,
+            sl_range[0], tp_range[0], conf_range[0],
+            self.max_bars, self.point_value, self.commission,
+            self.starting_equity,
+        )
+        print(f"done ({time.time() - t_jit:.1f}s)")
 
         # Step 2: Sweep all combos
         total_combos = len(sl_range) * len(tp_range) * len(conf_range)
@@ -321,7 +379,10 @@ class GridOptimizer:
         for sl in sl_range:
             for tp in tp_range:
                 for conf in conf_range:
-                    r = self._simulate_combo(signals, highs, lows, closes, opens, sl, tp, conf)
+                    r = self._simulate_combo(
+                        signal_bars, signal_dirs, signal_confs,
+                        highs, lows, closes, opens, sl, tp, conf,
+                    )
                     results.append(r)
                     done += 1
 
