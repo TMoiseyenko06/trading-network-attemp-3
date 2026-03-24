@@ -129,6 +129,12 @@ class LiveTrader:
         self._signal_count = 0
         self._last_day: Optional[int] = None
 
+        # Live CSV files — written incrementally so data survives crashes
+        session_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._trades_csv = f"live_trades_{session_ts}.csv"
+        self._buckets_csv = f"live_buckets_{session_ts}.csv"
+        self._trades_csv_header_written = False
+
     def _load_model(self, path: str) -> None:
         checkpoint = torch.load(path, map_location=self.gpu.device, weights_only=True)
         self.input_dim = checkpoint["input_dim"]
@@ -303,7 +309,7 @@ class LiveTrader:
                 )
 
         # Log trade for analysis
-        self._trade_log.append({
+        entry = {
             "timestamp": ts,
             "direction": dir_label,
             "confidence": conf,
@@ -317,7 +323,11 @@ class LiveTrader:
             "allowed": allowed,
             "size": size if allowed else 0,
             "reason": reason,
-        })
+            "result": None,
+            "pnl": None,
+        }
+        self._trade_log.append(entry)
+        self._save_trade_row(entry)
 
     def _resolve_position(self, current_price: float, ts: datetime) -> None:
         """Simulate resolving the previous position (paper trading)."""
@@ -353,13 +363,77 @@ class LiveTrader:
                 f"equity={self.risk_mgr.state.current_equity:.2f}"
             )
 
-            # Record result back into trade log for bucket analysis
+            # Record result back into trade log and update CSVs
             idx = pos.get("trade_log_idx")
             if idx is not None and idx < len(self._trade_log):
                 self._trade_log[idx]["result"] = result
                 self._trade_log[idx]["pnl"] = pnl
+                self._update_trade_row(idx)
+                self._save_buckets()
 
             self._current_position = None
+
+    def _save_trade_row(self, entry: dict) -> None:
+        """Append a single trade row to the trades CSV."""
+        row = pd.DataFrame([entry])
+        row.to_csv(
+            self._trades_csv,
+            mode="a",
+            header=not self._trades_csv_header_written,
+            index=False,
+        )
+        self._trades_csv_header_written = True
+
+    def _update_trade_row(self, idx: int) -> None:
+        """Rewrite the full trades CSV after a result/pnl update."""
+        pd.DataFrame(self._trade_log).to_csv(self._trades_csv, index=False)
+
+    def _save_buckets(self) -> None:
+        """Rewrite the buckets CSV with current stats."""
+        df = pd.DataFrame(self._trade_log)
+        trades = df[df["direction"] != "FLAT"].copy()
+        if len(trades) == 0:
+            return
+
+        rows = []
+        for lo in range(0, 100, 10):
+            hi = lo + 10
+            mask = (trades["confidence"] >= lo / 100) & (trades["confidence"] < hi / 100)
+            bucket = trades[mask]
+            if len(bucket) == 0:
+                continue
+            closed = bucket[bucket["result"].notna()] if "result" in bucket.columns else bucket.iloc[0:0]
+            n_closed = len(closed)
+            wins = int((closed["result"] == "TP").sum()) if n_closed > 0 else 0
+            losses = int((closed["result"] == "SL").sum()) if n_closed > 0 else 0
+            timeouts = int((closed["result"] == "TIMEOUT").sum()) if n_closed > 0 else 0
+            bucket_pnl = closed["pnl"].sum() if n_closed > 0 and "pnl" in closed.columns else 0.0
+            win_rate = (wins / n_closed * 100) if n_closed > 0 else 0.0
+            rows.append({
+                "bucket": f"{lo}-{hi}%",
+                "trades": len(bucket),
+                "closed": n_closed,
+                "wins": wins,
+                "losses": losses,
+                "timeouts": timeouts,
+                "win_rate": round(win_rate, 1),
+                "pnl": round(bucket_pnl, 2),
+            })
+
+        if rows:
+            # Add totals row
+            t = pd.DataFrame(rows)
+            rows.append({
+                "bucket": "TOTAL",
+                "trades": int(t["trades"].sum()),
+                "closed": int(t["closed"].sum()),
+                "wins": int(t["wins"].sum()),
+                "losses": int(t["losses"].sum()),
+                "timeouts": int(t["timeouts"].sum()),
+                "win_rate": round(t["wins"].sum() / t["closed"].sum() * 100, 1) if t["closed"].sum() > 0 else 0.0,
+                "pnl": round(t["pnl"].sum(), 2),
+            })
+            pd.DataFrame(rows).to_csv(self._buckets_csv, index=False)
 
     def run(self) -> None:
         """Start the live data stream and run inference loop."""
@@ -372,6 +446,8 @@ class LiveTrader:
         print(f"  Stype:    {self.stype_in}")
         print(f"  Lookback: {self.config.lookback} bars")
         print(f"  Buffer needs: {self.buffer.min_bars} bars before first signal")
+        print(f"  Trades CSV:   {self._trades_csv}")
+        print(f"  Buckets CSV:  {self._buckets_csv}")
         print(f"{'='*60}\n")
 
         max_retries = 10
@@ -502,7 +578,8 @@ class LiveTrader:
                     f"{total_wr:>7.1f}% ${total_pnl:>+9.2f}"
                 )
 
-            # Save trade log
-            log_path = f"live_trades_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-            df.to_csv(log_path, index=False)
-            print(f"\n  Trade log saved to {log_path}")
+            # Final save (CSVs already updated incrementally)
+            self._update_trade_row(0)  # full rewrite to ensure final state
+            self._save_buckets()
+            print(f"\n  Trade log:    {self._trades_csv}")
+            print(f"  Bucket stats: {self._buckets_csv}")
