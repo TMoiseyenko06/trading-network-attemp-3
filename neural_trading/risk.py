@@ -33,11 +33,16 @@ class RiskState:
     trades_today: int = 0
     is_halted: bool = False
     halt_reason: str = ""
-    last_trade_bar: int = -9999              # bar index of last trade entry
+    last_trade_bar: int = -9999              # bar index of last trade entry (global)
+    # Per-bucket cooldown: key = bucket index (0=50-60%, 1=60-70%, etc.), value = last trade bar
+    last_trade_bar_by_bucket: dict = field(default_factory=lambda: {})
 
 
 class RiskManager:
     """Enforces hard risk limits that the neural network cannot override."""
+
+    # Confidence buckets: 50-59% = bucket 5, 60-69% = bucket 6, 70-79% = bucket 7, etc.
+    # Each bucket has its own independent cooldown timer.
 
     def __init__(self, config: Optional[RiskConfig] = None, starting_equity: float = 50000.0):
         self.config = config or RiskConfig()
@@ -45,6 +50,15 @@ class RiskManager:
             peak_equity=starting_equity,
             current_equity=starting_equity,
         )
+
+    @staticmethod
+    def _confidence_bucket(confidence: float) -> int:
+        """Map confidence to a 10%-wide bucket. 0.55 -> 5, 0.63 -> 6, 0.70 -> 7, etc.
+
+        Uses floor(conf * 10) so each bucket is [X0%, X9%]:
+          50-59% = 5, 60-69% = 6, 70-79% = 7, 80-89% = 8, 90-99% = 9
+        """
+        return min(int(confidence * 10), 9)
 
     def check_trade(
         self, confidence: float, predicted_direction: int,
@@ -82,10 +96,13 @@ class RiskManager:
         if self.state.trades_today >= self.config.max_trades_per_day:
             return False, 0, f"Max trades/day ({self.config.max_trades_per_day}) reached"
 
-        # Minimum bar gap between trades
-        bars_since = current_bar - self.state.last_trade_bar
+        # Minimum bar gap between trades — per confidence bucket
+        # A 55% signal cooling down won't block a 65% signal
+        bucket = self._confidence_bucket(confidence)
+        last_bar_this_bucket = self.state.last_trade_bar_by_bucket.get(bucket, -9999)
+        bars_since = current_bar - last_bar_this_bucket
         if bars_since < self.config.min_bars_between_trades:
-            return False, 0, f"Min bar gap: {bars_since}/{self.config.min_bars_between_trades}"
+            return False, 0, f"Min bar gap: {bars_since}/{self.config.min_bars_between_trades} (bucket {bucket})"
 
         # Minimum confidence filter
         if confidence < self.config.min_confidence:
@@ -113,12 +130,16 @@ class RiskManager:
 
         return True, size, "Trade approved"
 
-    def record_trade_result(self, pnl: float, entry_bar: int = 0) -> None:
+    def record_trade_result(self, pnl: float, entry_bar: int = 0, confidence: float = 0.0) -> None:
         """Update state after a trade completes."""
         self.state.daily_pnl += pnl
         self.state.current_equity += pnl
         self.state.trades_today += 1
         self.state.last_trade_bar = entry_bar
+
+        # Track per-bucket cooldown
+        bucket = self._confidence_bucket(confidence)
+        self.state.last_trade_bar_by_bucket[bucket] = entry_bar
 
         # Update peak and trailing drawdown
         if self.state.current_equity > self.state.peak_equity:

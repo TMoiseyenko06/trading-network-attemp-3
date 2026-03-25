@@ -429,7 +429,7 @@ class Backtester:
 
             # Update state
             equity += trade.pnl
-            self.risk_mgr.record_trade_result(trade.pnl, entry_bar=i)
+            self.risk_mgr.record_trade_result(trade.pnl, entry_bar=i, confidence=trade.confidence)
             in_trade = True
             current_trade_exit_bar = trade.exit_bar
 

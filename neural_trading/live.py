@@ -297,6 +297,7 @@ class LiveTrader:
                     "entry_time": ts,
                     "bars_held": 0,
                     "trade_log_idx": len(self._trade_log),  # index into trade log
+                    "confidence": confidence,
                 }
         else:
             if direction == 2:
@@ -375,7 +376,7 @@ class LiveTrader:
 
             # P&L in dollars (NQ: $20/point)
             pnl = price_diff * pos["size"] * 20.0
-            self.risk_mgr.record_trade_result(pnl, entry_bar=self._signal_count)
+            self.risk_mgr.record_trade_result(pnl, entry_bar=self._signal_count, confidence=pos.get("confidence", 0.0))
 
             result = "TP" if hit_tp else ("SL" if hit_sl else "TIMEOUT")
             ts_str = ts.strftime("%H:%M:%S")
