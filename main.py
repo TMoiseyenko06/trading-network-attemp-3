@@ -230,7 +230,7 @@ def compare(args: argparse.Namespace) -> None:
 
     results = {}
     for sl, tp in setups:
-        label = f"SL{sl:.0f}/TP{tp:.0f}"
+        label = f"SL{sl:.0f}_TP{tp:.0f}"
         print(f"\n{'#'*60}")
         print(f"  SETUP: {label}  (min conf={min_conf:.0%})")
         print(f"{'#'*60}")
