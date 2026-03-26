@@ -180,7 +180,7 @@ def fixed_barrier_labels(
     close: pd.Series,
     high: pd.Series,
     low: pd.Series,
-    tp_points: float = 35.0,
+    tp_points: float = 30.0,
     sl_points: float = 20.0,
     max_bars: int = 20,
 ) -> pd.DataFrame:

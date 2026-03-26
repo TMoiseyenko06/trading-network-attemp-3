@@ -85,7 +85,7 @@ class Backtester:
         max_bars_in_trade: int = 20,
         risk_config: Optional[RiskConfig] = None,
         lookback: int = 90,
-        fixed_tp_points: float = 35.0,   # fixed take-profit in points
+        fixed_tp_points: float = 30.0,   # fixed take-profit in points (1.5 R:R)
         fixed_sl_points: float = 20.0,   # fixed stop-loss in points
     ):
         self.point_value = point_value

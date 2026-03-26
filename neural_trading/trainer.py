@@ -65,7 +65,7 @@ class WalkForwardTrainer:
         lr: float = 1e-3,
         epochs_per_fold: int = 100,
         patience: int = 7,
-        tp_points: float = 35.0,
+        tp_points: float = 30.0,
         sl_points: float = 20.0,
     ):
         self.gpu = gpu_profile or detect_gpu()

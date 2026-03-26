@@ -13,7 +13,7 @@ class Config:
     vol_window: int = 20                # rolling window for volume z-score
 
     # Fixed TP/SL (hard rules — not predicted by the network)
-    fixed_tp_points: float = 35.0       # take-profit in index points
+    fixed_tp_points: float = 30.0       # take-profit in index points (1.5 R:R)
     fixed_sl_points: float = 20.0       # stop-loss in index points
 
     # Training
