@@ -297,7 +297,7 @@ class LiveTrader:
                     "entry_time": ts,
                     "bars_held": 0,
                     "trade_log_idx": len(self._trade_log),  # index into trade log
-                    "confidence": confidence,
+                    "confidence": conf,
                 }
         else:
             if direction == 2:
