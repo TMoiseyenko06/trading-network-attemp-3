@@ -109,11 +109,11 @@ class LiveTrader:
         self.fixed_tp_points = self.config.fixed_tp_points
         self.fixed_sl_points = self.config.fixed_sl_points
 
-        # Risk manager
+        # Risk manager — use higher confidence for live trading
         self.risk_mgr = RiskManager(
             RiskConfig(
                 daily_loss_limit=self.config.daily_loss_limit,
-                min_confidence=self.config.min_confidence,
+                min_confidence=0.75,
                 cooldown_bars=self.config.cooldown_bars,
                 consecutive_loss_trigger=self.config.consecutive_loss_trigger,
                 max_position_size=self.config.max_position_size,
@@ -375,7 +375,7 @@ class LiveTrader:
                 price_diff = entry - exit_price
 
             # P&L in dollars (NQ: $20/point)
-            pnl = price_diff * pos["size"] * 20.0
+            pnl = price_diff * pos["size"] * self.config.point_value
             self.risk_mgr.record_trade_result(pnl, entry_bar=self._signal_count, confidence=pos.get("confidence", 0.0))
 
             result = "TP" if hit_tp else ("SL" if hit_sl else "TIMEOUT")
@@ -468,6 +468,9 @@ class LiveTrader:
         print(f"  Symbols:  {', '.join(self.symbols)}")
         print(f"  Stype:    {self.stype_in}")
         print(f"  Lookback: {self.config.lookback} bars")
+        print(f"  TP/SL:    {self.fixed_tp_points:.0f}/{self.fixed_sl_points:.0f} pts "
+              f"(R:R {self.fixed_tp_points / self.fixed_sl_points:.1f})")
+        print(f"  Min conf: {self.risk_mgr.config.min_confidence:.0%}")
         print(f"  Buffer needs: {self.buffer.min_bars} bars before first signal")
         print(f"  Trades CSV:   {self._trades_csv}")
         print(f"  Buckets CSV:  {self._buckets_csv}")

@@ -15,6 +15,7 @@ class Config:
     # Fixed TP/SL (hard rules — not predicted by the network)
     fixed_tp_points: float = 30.0       # take-profit in index points (1.5 R:R)
     fixed_sl_points: float = 20.0       # stop-loss in index points
+    point_value: float = 20.0           # NQ = $20/point, ES = $50/point
 
     # Training
     lr: float = 1e-3
