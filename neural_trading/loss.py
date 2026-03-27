@@ -3,10 +3,11 @@
 The model predicts direction (LONG/SHORT/FLAT) + confidence.
 TP/SL are hard-coded (30pt TP, 20pt SL → 1.5 R:R).
 
-Target: 75% trade win rate. Two loss components:
+Target: fewer, higher-quality trades. Three loss components:
   1. Label-smoothed cross-entropy — calibrated direction prediction
-  2. Wrong-trade penalty — extra cost when model predicts LONG/SHORT
-     but the true label disagrees (teaches model to go FLAT when unsure)
+  2. Wrong-trade penalty — extra cost for wrong LONG/SHORT calls
+  3. Confidence calibration — train confidence head as a real accuracy
+     predictor so it can be used as a quality filter in live trading
 """
 
 import torch
@@ -17,9 +18,9 @@ import torch.nn.functional as F
 class TradingLoss(nn.Module):
     """Classification loss targeting high win rate on trades.
 
-    Cross-entropy with label smoothing + asymmetric penalty for wrong
-    directional calls. The model should predict FLAT when uncertain
-    rather than guessing wrong on a LONG/SHORT.
+    Cross-entropy + wrong-trade penalty + confidence calibration.
+    The confidence head learns to predict whether the trade will be
+    correct, making it a reliable filter for live/backtest.
     """
 
     def __init__(
@@ -27,18 +28,18 @@ class TradingLoss(nn.Module):
         cls_weight: float = 1.0,
         mag_weight: float = 0.0,
         sortino_weight: float = 0.0,
-        confidence_weight: float = 0.0,
+        confidence_weight: float = 0.3,
         pnl_weight: float = 0.0,
         frequency_weight: float = 3.0,
         tp_points: float = 30.0,
         sl_points: float = 20.0,
         class_weights: torch.Tensor | None = None,
         label_smoothing: float = 0.05,
-        wrong_trade_penalty: float = 0.5,
+        wrong_trade_penalty: float = 1.5,
     ):
         super().__init__()
         self.cls_weight = cls_weight
-        self.mag_weight = mag_weight
+        self.confidence_weight = confidence_weight
         self.frequency_weight = frequency_weight
         self.tp_points = tp_points
         self.sl_points = sl_points
@@ -76,22 +77,36 @@ class TradingLoss(nn.Module):
         p_flat_mean = probs[:, 2].mean()
 
         # 2. Wrong-trade penalty — extra loss when model predicts LONG/SHORT
-        #    but gets the direction wrong. This teaches the model: "if you're
-        #    not sure, predict FLAT instead of guessing wrong."
-        #    Only penalizes non-FLAT predictions that are incorrect.
+        #    but gets the direction wrong. Increased weight (1.5) forces
+        #    the model to prefer FLAT over uncertain directional calls.
         trade_mask = hard_preds != 2                          # predicted a direction
         wrong_mask = trade_mask & (hard_preds != true_labels) # but got it wrong
 
         if wrong_mask.any():
-            # How confident was the model in the wrong direction?
-            # Use the probability assigned to the wrong predicted class
             wrong_probs = probs[wrong_mask].gather(1, hard_preds[wrong_mask].unsqueeze(1)).squeeze(1)
-            # Penalize proportional to confidence in wrong answer
             wrong_penalty = wrong_probs.mean()
         else:
             wrong_penalty = torch.zeros(1, device=direction_logits.device)
 
-        total = self.cls_weight * cls_loss + self.wrong_trade_penalty * wrong_penalty
+        # 3. Confidence calibration — train the confidence head to predict
+        #    whether the directional prediction is correct.
+        #    Target: 1.0 if pred == true_label, 0.0 if pred != true_label.
+        #    Only on non-FLAT predictions (confidence is meaningless for FLAT).
+        conf_sig = torch.sigmoid(confidence)
+        conf_loss = torch.zeros(1, device=direction_logits.device)
+
+        if trade_mask.any():
+            # Binary target: 1 = correct trade, 0 = wrong trade
+            correct = (hard_preds[trade_mask] == true_labels[trade_mask]).float()
+            conf_on_trades = conf_sig[trade_mask]
+            # BCE loss: train confidence to match correctness
+            conf_loss = F.binary_cross_entropy(
+                conf_on_trades, correct, reduction="mean",
+            )
+
+        total = (self.cls_weight * cls_loss
+                 + self.wrong_trade_penalty * wrong_penalty
+                 + self.confidence_weight * conf_loss)
 
         # NaN guard
         if torch.isnan(total):
@@ -122,7 +137,6 @@ class TradingLoss(nn.Module):
         sortino_val = (soft_pnl.mean() / downside_std).clamp(-10, 10).item()
 
         # Confidence on trades
-        conf_sig = torch.sigmoid(confidence).float()
         if trade_mask.any():
             avg_trade_conf = conf_sig[trade_mask].mean().item()
         else:
@@ -132,7 +146,7 @@ class TradingLoss(nn.Module):
             "cls_loss": cls_loss.item(),
             "mag_loss": 0.0,
             "sortino": sortino_val,
-            "conf_loss": 0.0,
+            "conf_loss": conf_loss.item() if torch.is_tensor(conf_loss) else 0.0,
             "pnl": expected_pnl.mean().item(),
             "flat_rate": p_flat_mean.item(),
             "accuracy": accuracy,

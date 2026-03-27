@@ -62,7 +62,7 @@ class FeatureLearner(nn.Module):
             )
             for _ in range(num_blocks)
         ])
-        self.dropout = nn.Dropout(0.1)
+        self.dropout = nn.Dropout(0.2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (batch, seq_len, features) -> (batch, features, seq_len)
@@ -83,16 +83,16 @@ class ContextMemory(nn.Module):
         super().__init__()
         self.norm1 = nn.LayerNorm(hidden_dim)
         self.attn = nn.MultiheadAttention(
-            hidden_dim, num_heads, dropout=0.1, batch_first=True,
+            hidden_dim, num_heads, dropout=0.15, batch_first=True,
         )
         self.norm2 = nn.LayerNorm(hidden_dim)
         self.lstm = nn.LSTM(
             hidden_dim, hidden_dim,
             num_layers=lstm_layers,
             batch_first=True,
-            dropout=0.1 if lstm_layers > 1 else 0,
+            dropout=0.15 if lstm_layers > 1 else 0,
         )
-        self.dropout = nn.Dropout(0.1)
+        self.dropout = nn.Dropout(0.15)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Self-attention with residual (causal — no future leakage)
@@ -138,7 +138,7 @@ class DecisionHead(nn.Module):
         self.shared = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.GELU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.3),
         )
         self.direction = nn.Linear(hidden_dim, num_classes)   # softmax over long/short/flat
         self.confidence = nn.Linear(hidden_dim, 1)            # sigmoid -> [0, 1]
