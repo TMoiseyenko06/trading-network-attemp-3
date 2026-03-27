@@ -60,7 +60,7 @@ class WalkForwardTrainer:
     def __init__(
         self,
         gpu_profile: Optional[GPUProfile] = None,
-        lookback: int = 90,
+        lookback: int = 120,
         max_bars: int = 20,
         lr: float = 1e-3,
         epochs_per_fold: int = 100,

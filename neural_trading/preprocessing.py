@@ -9,30 +9,88 @@ def compute_features(df: pd.DataFrame, vol_window: int = 20) -> pd.DataFrame:
     """Convert raw OHLCV into stationary features.
 
     Input columns: open, high, low, close, volume
-    Output columns: ret_open, ret_high, ret_low, ret_close,
-                    range_pct, upper_wick, lower_wick, vol_zscore
+    Output columns:
+      Bar structure (8):  ret_open, ret_high, ret_low, ret_close,
+                          range_pct, upper_wick, lower_wick, vol_zscore
+      Multi-TF returns (3): ret_5, ret_15, ret_60
+      Momentum (3):       rsi_14, atr_pct, macd_hist_norm
+      Trend / mean-rev (4): bb_pos, sma20_dist, sma50_dist, vol_delta_20
+      Swing levels (2):   high_20_dist, low_20_dist
+    Total: 20 features
     """
     out = pd.DataFrame(index=df.index)
+    close = df["close"]
+    high = df["high"]
+    low = df["low"]
+    volume = df["volume"]
 
-    # Bar-to-bar percentage returns for OHLC
+    # ── Bar structure ────────────────────────────────────────────────────────
     for col in ["open", "high", "low", "close"]:
         out[f"ret_{col}"] = df[col].pct_change()
 
-    # Bar range as percentage of close
-    out["range_pct"] = (df["high"] - df["low"]) / df["close"]
+    out["range_pct"] = (high - low) / close
 
-    # Wick ratios (relative to bar range)
-    bar_range = df["high"] - df["low"]
+    bar_range = high - low
     bar_range_safe = bar_range.replace(0, np.nan)
-    out["upper_wick"] = (df["high"] - df[["open", "close"]].max(axis=1)) / bar_range_safe
-    out["lower_wick"] = (df[["open", "close"]].min(axis=1) - df["low"]) / bar_range_safe
+    out["upper_wick"] = (high - df[["open", "close"]].max(axis=1)) / bar_range_safe
+    out["lower_wick"] = (df[["open", "close"]].min(axis=1) - low) / bar_range_safe
     out["upper_wick"] = out["upper_wick"].fillna(0)
     out["lower_wick"] = out["lower_wick"].fillna(0)
 
-    # Z-scored volume
-    vol_mean = df["volume"].rolling(vol_window, min_periods=1).mean()
-    vol_std = df["volume"].rolling(vol_window, min_periods=1).std().replace(0, 1)
-    out["vol_zscore"] = (df["volume"] - vol_mean) / vol_std
+    vol_mean = volume.rolling(vol_window, min_periods=1).mean()
+    vol_std = volume.rolling(vol_window, min_periods=1).std().replace(0, 1)
+    out["vol_zscore"] = (volume - vol_mean) / vol_std
+
+    # ── Multi-timeframe returns ──────────────────────────────────────────────
+    out["ret_5"]  = close.pct_change(5)
+    out["ret_15"] = close.pct_change(15)
+    out["ret_60"] = close.pct_change(60)
+
+    # ── RSI(14) normalized to [-0.5, 0.5] ───────────────────────────────────
+    delta = close.diff()
+    gain = delta.clip(lower=0).rolling(14, min_periods=1).mean()
+    loss = (-delta.clip(upper=0)).rolling(14, min_periods=1).mean()
+    rs = gain / loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+    out["rsi_14"] = (rsi.fillna(50) - 50) / 100  # centred at 0, range [-0.5, 0.5]
+
+    # ── ATR(14) as pct of close ──────────────────────────────────────────────
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    atr14 = tr.rolling(14, min_periods=1).mean()
+    out["atr_pct"] = atr14 / close
+
+    # ── MACD histogram normalised by ATR ────────────────────────────────────
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+    macd_line = ema12 - ema26
+    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+    macd_hist = macd_line - signal_line
+    out["macd_hist_norm"] = macd_hist / atr14.replace(0, np.nan)
+
+    # ── Bollinger Band position ──────────────────────────────────────────────
+    sma20 = close.rolling(20, min_periods=1).mean()
+    std20 = close.rolling(20, min_periods=1).std().replace(0, np.nan)
+    out["bb_pos"] = (close - sma20) / (2 * std20)  # ~[-1, 1]; >1 = overbought
+
+    # ── Distance from moving averages ───────────────────────────────────────
+    out["sma20_dist"] = (close - sma20) / close
+    sma50 = close.rolling(50, min_periods=1).mean()
+    out["sma50_dist"] = (close - sma50) / close
+
+    # ── Volume delta (fraction of up-bars in last 20) ───────────────────────
+    up_bar = (df["close"] > df["open"]).astype(float)
+    out["vol_delta_20"] = up_bar.rolling(20, min_periods=1).mean() - 0.5  # centre at 0
+
+    # ── Distance from 20-bar high / low ─────────────────────────────────────
+    high_20 = high.rolling(20, min_periods=1).max()
+    low_20  = low.rolling(20, min_periods=1).min()
+    out["high_20_dist"] = (high_20 - close) / close  # how far below recent high
+    out["low_20_dist"]  = (close - low_20)  / close  # how far above recent low
 
     return out
 

@@ -8,7 +8,7 @@ class Config:
     """All tunable parameters in one place."""
 
     # Data
-    lookback: int = 90                  # bars of history the network sees
+    lookback: int = 120                 # bars of history the network sees
     max_bars: int = 20                  # forward window for labeling — 20 min gives room for real moves
     vol_window: int = 20                # rolling window for volume z-score
 
@@ -19,7 +19,7 @@ class Config:
     # Training
     lr: float = 1e-3
     epochs_per_fold: int = 100
-    patience: int = 7
+    patience: int = 15
     train_months: int = 3
     val_months: int = 1
     test_months: int = 1
